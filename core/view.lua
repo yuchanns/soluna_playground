@@ -1,10 +1,87 @@
 local font = require "core.font"
 local sfont = require "soluna.font"
+---@class SolunaFile
+---@field searchpath fun(name: string, path: string): string?
+---@field load fun(path: string): string?
+---@type SolunaFile
+---@diagnostic disable-next-line: assign-type-mismatch
 local file = require "soluna.file"
 
 local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 
+---@class ViewCommand
+---@field name string
+---@field args table
+
+---@class ViewLayout
+---@field x number?
+---@field y number?
+---@field w number?
+---@field h number?
+
+---@class ViewBatch
+---@field layer fun(self: ViewBatch, x?: number, y?: number)
+
+---@class (partial) ViewEffect
+---@field scope ViewScope
+---@field fn fun()
+---@field deps table[]
+---@field queued boolean?
+---@field stopped boolean?
+
+---@class (partial) ViewScope
+---@field targets table
+---@field active ViewEffect?
+---@field queue table<integer, ViewEffect?>
+---@field queue_head integer
+---@field queue_tail integer
+
+---@class (partial) ViewValue<T>
+---@overload fun(): T
+---@overload fun(value: T)
+---@field scope ViewScope
+---@field value T
+
+---@alias ViewComputed<T> fun(): T
+
+---@class (partial) ViewComputedState<T>
+---@field effect ViewEffect?
+---@field value ViewValue<T>
+
+---@class (partial) ViewInstance
+---@field view View
+---@field parent ViewInstance?
+---@field children ViewInstance[]
+---@field layout ViewLayout
+---@field disposables ViewComputedState<any>[]?
+---@field mounted boolean?
+---@field effect ViewEffect?
+---@field commands ViewCommand[]?
+---@field pointer fun(x: number, y: number)?
+---@field click fun(x: number, y: number): any?
+
+---@class (partial) View
+---@field scope ViewScope
+---@field instances ViewInstance[]
+---@field w number
+---@field h number
+---@field pointer_x number?
+---@field pointer_y number?
+---@field resources table
+
+---@class ViewContext
+---@field view View
+---@field instance ViewInstance?
+---@field disposables ViewComputedState<any>[]?
+---@field mounting boolean?
+---@field drawing boolean?
+
+---@type ViewContext?
+local active
+
+---@class (partial) ViewScope
 local Scope = {}; do
+	---@param effect ViewEffect
 	local function cleanup(effect)
 		for i = 1, #effect.deps do
 			effect.deps[i][effect] = nil
@@ -14,6 +91,7 @@ local Scope = {}; do
 
 	Scope.__index = Scope
 
+	---@class (partial) ViewEffect
 	local Effect = {}; do
 		Effect.__index = Effect
 		function Effect:stop()
@@ -26,13 +104,20 @@ local Scope = {}; do
 		end
 	end
 
+	---@class (partial) ViewValue<T>
 	local Value = {}; do
+		---@generic T
+		---@param self ViewValue<T>
+		---@return T
 		local function read(self)
 			local scope = rawget(self, "scope")
 			scope:track(self, "value")
 			return rawget(self, "value")
 		end
 
+		---@generic T
+		---@param self ViewValue<T>
+		---@param value T
 		local function write(self, value)
 			local old = rawget(self, "value")
 			if old == value then
@@ -42,6 +127,8 @@ local Scope = {}; do
 			rawget(self, "scope"):trigger(self, "value")
 		end
 
+		---@generic T
+		---@return T?
 		function Value:__call(...args)
 			if args.n == 0 then
 				return read(self)
@@ -49,6 +136,9 @@ local Scope = {}; do
 			write(self, table.unpack(args, 1, args.n))
 		end
 
+		---@generic T
+		---@param key string
+		---@return any
 		function Value:__index(key)
 			if key == "value" then
 				return read(self)
@@ -56,6 +146,8 @@ local Scope = {}; do
 			return Value[key]
 		end
 
+		---@param key string
+		---@param value any
 		function Value:__newindex(key, value)
 			if key == "value" then
 				write(self, value)
@@ -65,6 +157,8 @@ local Scope = {}; do
 		end
 	end
 
+	---@param target table
+	---@param key string
 	function Scope:track(target, key)
 		local effect = self.active
 		if not effect or effect.stopped then
@@ -85,6 +179,7 @@ local Scope = {}; do
 		effect.deps[#effect.deps + 1] = dep
 	end
 
+	---@param effect ViewEffect
 	function Scope:schedule(effect)
 		if effect.stopped or effect.queued then
 			return
@@ -95,6 +190,8 @@ local Scope = {}; do
 		self.queue[tail] = effect
 	end
 
+	---@param target table
+	---@param key string
 	function Scope:trigger(target, key)
 		local deps = self.targets[target]
 		if not deps then
@@ -111,6 +208,7 @@ local Scope = {}; do
 		end
 	end
 
+	---@param effect ViewEffect
 	function Scope:run(effect)
 		if effect.stopped then
 			return
@@ -125,6 +223,9 @@ local Scope = {}; do
 		end
 	end
 
+	---@generic T
+	---@param value T
+	---@return ViewValue<T>
 	function Scope:value(value)
 		return setmetatable({
 			scope = self,
@@ -132,7 +233,10 @@ local Scope = {}; do
 		}, Value)
 	end
 
+	---@param fn fun()
+	---@return ViewEffect
 	function Scope:effect(fn)
+		---@type ViewEffect
 		local effect = setmetatable({
 			scope = self,
 			fn = fn,
@@ -158,15 +262,16 @@ local Scope = {}; do
 	end
 end
 
-local active
-
+---@class (partial) View
 local View = {}; do
 	View.__index = View
 
 
+	---@class (partial) ViewInstance
 	local Instance = {}; do
 		Instance.__index = Instance
 
+		---@return number, number
 		function Instance:container_size()
 			local parent = self.parent
 			if parent then
@@ -175,6 +280,7 @@ local View = {}; do
 			return self.view.w, self.view.h
 		end
 
+		---@return number, number
 		function Instance:origin()
 			local layout = self.layout
 			local x = layout.x
@@ -193,11 +299,17 @@ local View = {}; do
 			return x or 0, y or 0
 		end
 
+		---@param x number
+		---@param y number
+		---@return number, number
 		function Instance:local_point(x, y)
 			local ox, oy = self:origin()
 			return x - ox, y - oy
 		end
 
+		---@param x number
+		---@param y number
+		---@return boolean
 		function Instance:contains(x, y)
 			local layout = self.layout
 			local w = layout.w
@@ -209,12 +321,15 @@ local View = {}; do
 			return lx >= 0 and lx <= w and ly >= 0 and ly <= h
 		end
 
+		---@param batch ViewBatch
 		function Instance:draw(batch)
 			if not self.commands then
 				return
 			end
 			for i = 1, #self.commands do
 				local command = self.commands[i]
+				---@type fun(batch: ViewBatch, ...: any)
+				---@diagnostic disable-next-line: undefined-field
 				local f = assert(batch[command.name])
 				local args = command.args
 				f(batch, table.unpack(args, 1, args.n))
@@ -243,6 +358,9 @@ local View = {}; do
 		end
 	end
 
+	---@param view View
+	---@param parent ViewInstance?
+	---@param instance ViewInstance
 	local function append_child(view, parent, instance)
 		if parent then
 			parent.children[#parent.children + 1] = instance
@@ -251,6 +369,8 @@ local View = {}; do
 		end
 	end
 
+	---@param batch ViewBatch
+	---@param instance ViewInstance
 	local function draw_node(batch, instance)
 		if not instance.mounted then
 			return
@@ -264,6 +384,9 @@ local View = {}; do
 		batch:layer()
 	end
 
+	---@param instance ViewInstance
+	---@param x number
+	---@param y number
 	local function pointer_node(instance, x, y)
 		if not instance.mounted then
 			return
@@ -277,6 +400,10 @@ local View = {}; do
 		end
 	end
 
+	---@param instance ViewInstance
+	---@param x number
+	---@param y number
+	---@return ViewInstance?
 	local function click_node(instance, x, y)
 		if not instance.mounted or not instance:contains(x, y) then
 			return nil
@@ -295,6 +422,7 @@ local View = {}; do
 	end
 
 	local Recorder = {}; do
+		---@param name string
 		function Recorder.__index(_, name)
 			return function(self, ...args)
 				local commands = self.commands
@@ -306,6 +434,8 @@ local View = {}; do
 		end
 	end
 
+	---@param props table?
+	---@return ViewLayout
 	local function layout(props)
 		props = props or {}
 		return {
@@ -316,12 +446,18 @@ local View = {}; do
 		}
 	end
 
+	---@param chunk string
+	---@param props table?
+	---@param parent ViewInstance?
+	---@return ViewInstance
 	function View:mount(chunk, props, parent)
 		local path = assert(file.searchpath(chunk, self.resources.component_path))
 		local source = assert(file.load(path))
+		---@diagnostic disable-next-line: assign-type-mismatch
 		chunk = assert(load(source, "@" .. path, "t"))
 		assert(type(chunk) == "function")
 
+		---@type ViewInstance
 		local instance = setmetatable({
 			view = self,
 			parent = parent,
@@ -339,6 +475,7 @@ local View = {}; do
 		args.dispatch = function() return exports end
 
 		local prev = active
+		---@type ViewContext
 		active = {
 			view = self,
 			instance = instance,
@@ -346,6 +483,7 @@ local View = {}; do
 			mounting = true,
 		}
 		local result = table.pack(pcall(chunk, args))
+		---@cast result table<integer, any>
 		active = prev
 		if not result[1] then
 			error(result[2], 0)
@@ -364,7 +502,9 @@ local View = {}; do
 			local target = setmetatable({
 				commands = {},
 			}, Recorder)
+			---@diagnostic disable-next-line: redefined-local
 			local prev = active
+			---@type ViewContext
 			active = {
 				view = self,
 				instance = instance,
@@ -386,6 +526,8 @@ local View = {}; do
 		return self.scope:flush()
 	end
 
+	---@param w number
+	---@param h number
 	function View:resize(w, h)
 		self.w = w
 		self.h = h
@@ -394,6 +536,8 @@ local View = {}; do
 		end
 	end
 
+	---@param x number
+	---@param y number
 	function View:pointer(x, y)
 		self.pointer_x = x
 		self.pointer_y = y
@@ -403,6 +547,9 @@ local View = {}; do
 		end
 	end
 
+	---@param x number?
+	---@param y number?
+	---@return ViewInstance?
 	function View:click(x, y)
 		x = x or self.pointer_x
 		y = y or self.pointer_y
@@ -417,12 +564,15 @@ local View = {}; do
 		end
 	end
 
+	---@param batch ViewBatch
 	function View:draw(batch)
 		for i = 1, #self.instances do
 			draw_node(batch, self.instances[i])
 		end
 	end
 
+	---@param name string
+	---@param resource any
 	function View:set_resource(name, resource)
 		self.resources[name] = resource
 		self.scope:trigger(self.resources, name)
@@ -431,8 +581,11 @@ end
 
 local M = {}
 
+---@param args table?
+---@return View
 function M.new(args)
 	args = args or {}
+	---@type View
 	return setmetatable({
 		scope = setmetatable({
 			targets = setmetatable({}, {
@@ -454,12 +607,15 @@ function M.new(args)
 			},
 			component_path = args.component_path or COMPONENT_PATH
 		},
-	}, View)
+		}, View)
 end
 
+---@class (partial) ViewComputedState<T>
 local Computed = {}; do
 	Computed.__index = Computed
 
+	---@generic T
+	---@return T
 	function Computed:__call()
 		return self.value()
 	end
@@ -473,16 +629,26 @@ local Computed = {}; do
 	end
 end
 
+---@generic T
+---@param value T
+---@return ViewValue<T>
 function M.value(value)
+	---@cast active ViewContext
 	return active.view.scope:value(value)
 end
 
+---@param name string
+---@return any
 function M.resource(name)
+	---@cast active ViewContext
 	local view = active.view
 	view.scope:track(view.resources, name)
 	return assert(view.resources[name])
 end
 
+---@param chunk string
+---@param props table?
+---@return ViewInstance
 function M.mount(chunk, props)
 	local current = assert(active, "view.mount requires an active component context")
 	if current.drawing then
@@ -492,10 +658,16 @@ function M.mount(chunk, props)
 	return current.view:mount(chunk, props, current.instance)
 end
 
+---@generic T
+---@param fn fun(): T, ...
+---@return ViewComputed<T>
 function M.computed(fn)
+	---@cast active ViewContext
 	assert(active.disposables)
 	local view = active.view
+	---@type ViewValue<T>
 	local value = view.scope:value(nil)
+	---@type ViewContext
 	local ctx = {
 		view = view,
 	}
@@ -509,11 +681,13 @@ function M.computed(fn)
 		end
 		value(result)
 	end)
+	---@type ViewComputedState<T>
 	local computed = setmetatable({
 		effect = effect,
 		value = value,
 	}, Computed)
 	active.disposables[#active.disposables + 1] = computed
+	---@cast computed ViewComputed<T>
 	return computed
 end
 
