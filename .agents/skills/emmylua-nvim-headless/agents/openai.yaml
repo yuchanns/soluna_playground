@@ -1,0 +1,4 @@
+interface:
+  display_name: "EmmyLua Headless Nvim"
+  short_description: "Headless Neovim workflows for EmmyLua"
+  default_prompt: "Use $emmylua-nvim-headless to diagnose Lua annotations with emmylua_ls in headless Neovim."
