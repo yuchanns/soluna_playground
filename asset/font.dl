@@ -1,0 +1,10 @@
+fonts :
+	macos :
+		system : "Yuanti SC"
+	windows :
+		system : "Microsoft YaHei"
+	linux :
+		file :
+			path : "asset/font/SourceHanSansSC-Regular.ttf"
+			family : "Source Han Sans SC"
+
