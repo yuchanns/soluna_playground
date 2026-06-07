@@ -167,19 +167,27 @@ local View = {}; do
 	local Instance = {}; do
 		Instance.__index = Instance
 
+		function Instance:container_size()
+			local parent = self.parent
+			if parent then
+				return parent.layout.w or self.view.w, parent.layout.h or self.view.h
+			end
+			return self.view.w, self.view.h
+		end
+
 		function Instance:origin()
 			local layout = self.layout
 			local x = layout.x
 			local y = layout.y
 			local w = layout.w
 			local h = layout.h
-			local view = self.view
+			local parent_w, parent_h = self:container_size()
 
 			if x == nil and w ~= nil then
-				x = (view.w - w) / 2
+				x = (parent_w - w) / 2
 			end
 			if y == nil and h ~= nil then
-				y = (view.h - h) / 2
+				y = (parent_h - h) / 2
 			end
 
 			return x or 0, y or 0
@@ -216,6 +224,10 @@ local View = {}; do
 		function Instance:destroy()
 			if not self.mounted then return end
 			self.mounted = nil
+			for i = #self.children, 1, -1 do
+				self.children[i]:destroy()
+				self.children[i] = nil
+			end
 			if self.effect then
 				self.effect:stop()
 				self.effect = nil
@@ -229,6 +241,57 @@ local View = {}; do
 			end
 			self.commands = nil
 		end
+	end
+
+	local function append_child(view, parent, instance)
+		if parent then
+			parent.children[#parent.children + 1] = instance
+		else
+			view.instances[#view.instances + 1] = instance
+		end
+	end
+
+	local function draw_node(batch, instance)
+		if not instance.mounted then
+			return
+		end
+		local x, y = instance:origin()
+		batch:layer(x, y)
+		instance:draw(batch)
+		for i = 1, #instance.children do
+			draw_node(batch, instance.children[i])
+		end
+		batch:layer()
+	end
+
+	local function pointer_node(instance, x, y)
+		if not instance.mounted then
+			return
+		end
+		local lx, ly = instance:local_point(x, y)
+		if instance.pointer then
+			instance.pointer(lx, ly)
+		end
+		for i = 1, #instance.children do
+			pointer_node(instance.children[i], lx, ly)
+		end
+	end
+
+	local function click_node(instance, x, y)
+		if not instance.mounted or not instance:contains(x, y) then
+			return nil
+		end
+		local lx, ly = instance:local_point(x, y)
+		for i = #instance.children, 1, -1 do
+			local target = click_node(instance.children[i], lx, ly)
+			if target then
+				return target
+			end
+		end
+		if instance.click and instance.click(lx, ly) ~= false then
+			return instance
+		end
+		return nil
 	end
 
 	local Recorder = {}; do
@@ -253,7 +316,7 @@ local View = {}; do
 		}
 	end
 
-	function View:mount(chunk, props)
+	function View:mount(chunk, props, parent)
 		local path = assert(file.searchpath(chunk, self.resources.component_path))
 		local source = assert(file.load(path))
 		chunk = assert(load(source, "@" .. path, "t"))
@@ -261,6 +324,8 @@ local View = {}; do
 
 		local instance = setmetatable({
 			view = self,
+			parent = parent,
+			children = {},
 			layout = layout(props),
 			disposables = {},
 			mounted = true,
@@ -274,7 +339,12 @@ local View = {}; do
 		args.dispatch = function() return exports end
 
 		local prev = active
-		active = { view = self, disposables = instance.disposables }
+		active = {
+			view = self,
+			instance = instance,
+			disposables = instance.disposables,
+			mounting = true,
+		}
 		local result = table.pack(pcall(chunk, args))
 		active = prev
 		if not result[1] then
@@ -295,7 +365,11 @@ local View = {}; do
 				commands = {},
 			}, Recorder)
 			local prev = active
-			active = { view = self }
+			active = {
+				view = self,
+				instance = instance,
+				drawing = true,
+			}
 			local ok, err = pcall(draw, target)
 			active = prev
 			if not ok then
@@ -304,7 +378,7 @@ local View = {}; do
 			instance.commands = target.commands
 		end)
 
-		self.instances[#self.instances + 1] = instance
+		append_child(self, parent, instance)
 		return instance
 	end
 
@@ -325,9 +399,7 @@ local View = {}; do
 		self.pointer_y = y
 		for i = 1, #self.instances do
 			local instance = self.instances[i]
-			if instance.mounted and instance.pointer then
-				instance.pointer(instance:local_point(x, y))
-			end
+			pointer_node(instance, x, y)
 		end
 	end
 
@@ -338,23 +410,16 @@ local View = {}; do
 			return
 		end
 		for i = #self.instances, 1, -1 do
-			local instance = self.instances[i]
-			if instance.mounted and instance.click and instance:contains(x, y) then
-				instance.click(instance:local_point(x, y))
-				return instance
+			local target = click_node(self.instances[i], x, y)
+			if target then
+				return target
 			end
 		end
 	end
 
 	function View:draw(batch)
 		for i = 1, #self.instances do
-			local instance = self.instances[i]
-			if instance.mounted then
-				local x, y = instance:origin()
-				batch:layer(x, y)
-				instance:draw(batch)
-				batch:layer()
-			end
+			draw_node(batch, self.instances[i])
 		end
 	end
 
@@ -416,6 +481,15 @@ function M.resource(name)
 	local view = active.view
 	view.scope:track(view.resources, name)
 	return assert(view.resources[name])
+end
+
+function M.mount(chunk, props)
+	local current = assert(active, "view.mount requires an active component context")
+	if current.drawing then
+		error("view.mount cannot be called while drawing", 2)
+	end
+	assert(current.mounting and current.instance, "view.mount can only be called while mounting a component")
+	return current.view:mount(chunk, props, current.instance)
 end
 
 function M.computed(fn)
