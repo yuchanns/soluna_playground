@@ -422,15 +422,18 @@ local View = {}; do
 	end
 
 	local Recorder = {}; do
+		local methods = {}
 		---@param name string
 		function Recorder.__index(_, name)
-			return function(self, ...args)
+			local method = methods[name] or function(self, ...args)
 				local commands = self.commands
 				commands[#commands + 1] = {
 					name = name,
 					args = args,
 				}
 			end
+			methods[name] = method
+			return method
 		end
 	end
 
