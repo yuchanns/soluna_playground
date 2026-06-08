@@ -495,21 +495,27 @@ local View = {}; do
 			instance[key] = value
 		end
 
+		local target, ctx
+
 		instance.effect = self.scope:effect(function()
 			if not instance.mounted then
 				return
 			end
-			local target = setmetatable({
+			target = target or setmetatable({
 				commands = {},
 			}, Recorder)
 			---@diagnostic disable-next-line: redefined-local
 			local prev = active
 			---@type ViewContext
-			active = {
+			ctx = ctx or {
 				view = self,
 				instance = instance,
 				drawing = true,
 			}
+			active = ctx
+			for i = 1, #target.commands do
+				target.commands[i] = nil
+			end
 			local ok, err = pcall(draw, target)
 			active = prev
 			if not ok then
@@ -607,7 +613,7 @@ function M.new(args)
 			},
 			component_path = args.component_path or COMPONENT_PATH
 		},
-		}, View)
+	}, View)
 end
 
 ---@class (partial) ViewComputedState<T>
