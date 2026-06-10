@@ -11,9 +11,12 @@ local background <const> = args.background or 0xffffffff
 local hover_background <const> = args.hover_background or 0xfff9fafb
 local pressed_background <const> = args.pressed_background or 0xffeff6ff
 local menu_background <const> = args.menu_background or 0xffffffff
+local option_hover_background <const> = args.option_hover_background or 0xfff3f4f6
+local option_selected_background <const> = args.option_selected_background or 0xffdbeafe
 local menu_gap <const> = args.menu_gap or 4
 local text_color <const> = args.text_color or 0xff111827
 local placeholder_color <const> = args.placeholder_color or 0xff9ca3af
+local selected_text_color <const> = args.selected_text_color or 0xff1d4ed8
 local radius <const> = args.radius or 6
 local option_radius <const> = args.option_radius or 4
 local menu_padding <const> = args.menu_padding or 4
@@ -127,6 +130,9 @@ return function()
 							radius = option_radius,
 							enabled = true,
 							selected = item.value == args.value,
+							hover_background = option_hover_background,
+							selected_background = option_selected_background,
+							selected_text_color = selected_text_color,
 							on_select = args.on_change,
 						})
 					end
