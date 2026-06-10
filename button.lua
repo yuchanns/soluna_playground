@@ -16,18 +16,17 @@ local pressed = view.pressed()
 view.clickable(args)
 
 return function()
+	local background = color
+	if pressed() then
+		background = hover_color
+	elseif hovered() then
+		background = hover_color
+	end
+
 	view.box({
 		width = w,
 		height = h,
-		background = function()
-			if pressed() then
-				return hover_color
-			end
-			if hovered() then
-				return hover_color
-			end
-			return color
-		end,
+		background = background,
 	}, function()
 		view.text(label, {
 			width = "100%",

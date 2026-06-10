@@ -33,9 +33,7 @@ return function()
 				color = 0xfff4f7ff,
 				align = "CV",
 			})
-			view.text(function()
-				return tostring(count())
-			end, {
+			view.text(tostring(count()), {
 				width = "100%",
 				height = 96,
 				size = 72,

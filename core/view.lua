@@ -155,7 +155,6 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field hovered fun(): ViewValue<boolean>
 ---@field pressed fun(): ViewValue<boolean>
 ---@field ref fun(): ViewRef
----@field resolve fun(value: any): any
 ---@field computed fun(fn: function): ViewComputed<any>
 
 ---@type ViewContext?
@@ -181,15 +180,6 @@ end
 local function bump_version(version)
 	-- Version bumps must not subscribe the currently running render effect.
 	version(rawget(version, "value") + 1)
-end
-
----@param value any
----@return any
-local function resolve(value)
-	if type(value) == "function" then
-		return value()
-	end
-	return value
 end
 
 ---@param value number?
@@ -558,7 +548,7 @@ local View = {}; do
 			return false
 		end
 		local enabled = clickable.enabled
-		return enabled == nil or resolve(enabled) ~= false
+		return enabled == nil or enabled ~= false
 	end
 
 	---@param instance ViewInstance
@@ -791,7 +781,7 @@ local View = {}; do
 			local key = layout_keys[i]
 			local value = props[key]
 			if value ~= nil then
-				style[key] = resolve(value)
+				style[key] = value
 			end
 		end
 		return style
@@ -967,19 +957,19 @@ local View = {}; do
 		out[#out + 1] = command("layer", local_x, local_y)
 		local props = node.props
 		if props and props.background ~= nil then
-			local background = resolve(props.background)
+			local background = props.background
 			if background then
 				out[#out + 1] = command("add", matquad.quad(pixel_size(w), pixel_size(h), background), 0, 0)
 			end
 		end
 		if node.kind == "text" then
-			local text = resolve(node.text)
+			local text = node.text
 			local font_resource = read_resource "font"
 			local fontid = assert(font_resource.loaded).id
 			local cobj = assert(font_resource.ptr)
-			local size = props and resolve(props.size) or 16
-			local color = props and resolve(props.color) or 0xffffffff
-			local align = props and resolve(props.align) or "LC"
+			local size = props and props.size or 16
+			local color = props and props.color or 0xffffffff
+			local align = props and props.align or "LC"
 			local block = mattext.block(cobj, fontid, size, color, align)
 			out[#out + 1] = command("add", block(tostring(text or ""), pixel_size(w), pixel_size(h)), 0, 0)
 		end
@@ -1020,10 +1010,10 @@ local View = {}; do
 	local function layout(props)
 		props = props or {}
 		return {
-			x = resolve(props.x),
-			y = resolve(props.y),
-			w = resolve(props.width),
-			h = resolve(props.height),
+			x = props.x,
+			y = props.y,
+			w = props.width,
+			h = props.height,
 		}
 	end
 
@@ -1410,12 +1400,6 @@ end
 ---@return any
 function M.resource(name)
 	return read_resource(name)
-end
-
----@param value any
----@return any
-function M.resolve(value)
-	return resolve(value)
 end
 
 ---@param props ViewClickable?
