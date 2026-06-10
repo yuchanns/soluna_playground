@@ -27,10 +27,12 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field children ViewRenderNode[]
 ---@field cursor integer
 ---@field instance ViewInstance?
+---@field owner ViewInstance?
 ---@field draw fun(width: number, height: number)?
 ---@field commands ViewCommand[]?
 ---@field props table?
 ---@field text any
+---@field ref ViewRef?
 
 ---@class ViewLayout
 ---@field x number?
@@ -78,11 +80,14 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field effect ViewEffect?
 ---@field commands ViewCommand[]?
 ---@field render_root ViewRenderNode?
+---@field render_node ViewRenderNode?
 ---@field layout_version ViewValue<integer>
 ---@field props table
 ---@field args table
----@field pointer fun(x: number, y: number)?
----@field click fun(x: number, y: number): any?
+---@field clickable ViewClickable?
+---@field hovered ViewValue<boolean>?
+---@field pressed ViewValue<boolean>?
+---@field ref ViewRef?
 
 ---@class (partial) View
 ---@field scope ViewScope
@@ -92,6 +97,9 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field layout_version ViewValue<integer>
 ---@field pointer_x number?
 ---@field pointer_y number?
+---@field hovered_instance ViewInstance?
+---@field pressed_instance ViewInstance?
+---@field pressed_button integer?
 ---@field resources table
 
 ---@class ViewContext
@@ -107,6 +115,31 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field instance ViewInstance
 ---@field parent ViewRenderNode
 
+---@class ViewPointerEvent
+---@field target ViewInstance
+---@field x number
+---@field y number
+---@field button integer?
+
+---@class ViewClickable
+---@field enabled? any
+---@field on_click? fun(event: ViewPointerEvent)
+---@field on_pointer_down? fun(event: ViewPointerEvent)
+---@field on_pointer_up? fun(event: ViewPointerEvent)
+---@field on_pointer_enter? fun(event: ViewPointerEvent)
+---@field on_pointer_leave? fun(event: ViewPointerEvent)
+---@field on_pointer_move? fun(event: ViewPointerEvent)
+
+---@class ViewRect
+---@field x number
+---@field y number
+---@field w number
+---@field h number
+
+---@class (partial) ViewRef
+---@field current any
+---@field rect fun(self: ViewRef): ViewRect?
+
 ---@class ViewModule
 ---@field batch ViewBatch
 ---@field new fun(args?: table): View
@@ -118,6 +151,11 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field vbox fun(props?: table, children?: fun()): ViewRenderNode
 ---@field canvas fun(props?: table, draw?: fun(width: number, height: number)): ViewRenderNode
 ---@field text fun(text: any, props?: table): ViewRenderNode
+---@field clickable fun(props?: ViewClickable)
+---@field hovered fun(): ViewValue<boolean>
+---@field pressed fun(): ViewValue<boolean>
+---@field ref fun(): ViewRef
+---@field resolve fun(value: any): any
 ---@field computed fun(fn: function): ViewComputed<any>
 
 ---@type ViewContext?
@@ -167,6 +205,19 @@ local function read_resource(name)
 	local view = active.view
 	view.scope:track(view.resources, name)
 	return assert(view.resources[name])
+end
+
+---@type fun(target: any): ViewRect?
+local rect_of
+
+---@class (partial) ViewRef
+local Ref = {}; do
+	Ref.__index = Ref
+
+	---@return ViewRect?
+	function Ref:rect()
+		return rect_of(self.current)
+	end
 end
 
 ---@class (partial) ViewScope
@@ -434,6 +485,10 @@ local View = {}; do
 		function Instance:destroy()
 			if not self.mounted then return end
 			self.mounted = nil
+			if self.ref and self.ref.current == self then
+				self.ref.current = nil
+			end
+			self.ref = nil
 			for i = #self.children, 1, -1 do
 				self.children[i]:destroy()
 				self.children[i] = nil
@@ -457,6 +512,20 @@ local View = {}; do
 		end
 	end
 
+	---@param holder table
+	---@param ref ViewRef?
+	---@param current any
+	local function bind_ref(holder, ref, current)
+		local old = holder.ref
+		if old ~= ref and old and old.current == current then
+			old.current = nil
+		end
+		holder.ref = ref
+		if ref then
+			ref.current = current
+		end
+	end
+
 	---@param view View
 	---@param parent ViewInstance?
 	---@param instance ViewInstance
@@ -468,10 +537,117 @@ local View = {}; do
 		end
 	end
 
-	---@type fun(node: ViewRenderNode, x: number, y: number)
-	local pointer_render_node
-	---@type fun(node: ViewRenderNode, x: number, y: number): ViewInstance?
-	local click_render_node
+	---@type fun(instance: ViewInstance, x: number, y: number): ViewInstance?, number?, number?
+	local hit_instance
+	---@type fun(node: ViewRenderNode, x: number, y: number): ViewInstance?, number?, number?
+	local hit_render_node
+
+	---@param value ViewValue<boolean>?
+	---@param state boolean
+	local function set_state(value, state)
+		if value then
+			value(state)
+		end
+	end
+
+	---@param instance ViewInstance
+	---@return boolean
+	local function clickable_enabled(instance)
+		local clickable = instance.clickable
+		if not clickable then
+			return false
+		end
+		local enabled = clickable.enabled
+		return enabled == nil or resolve(enabled) ~= false
+	end
+
+	---@param instance ViewInstance
+	---@param x number
+	---@param y number
+	---@param button integer?
+	---@return ViewPointerEvent
+	local function pointer_event(instance, x, y, button)
+		return {
+			target = instance,
+			x = x,
+			y = y,
+			button = button,
+		}
+	end
+
+	---@param instance ViewInstance
+	---@param name string
+	---@param event ViewPointerEvent
+	local function call_clickable(instance, name, event)
+		local clickable = instance.clickable
+		if not clickable then
+			return
+		end
+		---@type fun(event: ViewPointerEvent)?
+		---@diagnostic disable-next-line: undefined-field
+		local callback = clickable[name]
+		if callback then
+			callback(event)
+		end
+	end
+
+	---@param instance ViewInstance
+	---@return number, number
+	local function instance_origin(instance)
+		local render_node = instance.render_node
+		if render_node then
+			local x, y = yoga.node_get(render_node.node)
+			local owner = assert(render_node.owner)
+			local ox, oy = instance_origin(owner)
+			return ox + x, oy + y
+		end
+		local x, y = instance:origin()
+		local parent = instance.parent
+		if parent then
+			local px, py = instance_origin(parent)
+			return px + x, py + y
+		end
+		return x, y
+	end
+
+	---@param instance ViewInstance
+	---@param x number
+	---@param y number
+	---@param button integer?
+	---@return ViewPointerEvent
+	local function pointer_event_at(instance, x, y, button)
+		local ox, oy = instance_origin(instance)
+		return pointer_event(instance, x - ox, y - oy, button)
+	end
+
+	rect_of = function(target)
+		if not target then
+			return nil
+		end
+		if target.node then
+			---@cast target ViewRenderNode
+			local x, y, w, h = yoga.node_get(target.node)
+			if target.owner then
+				local ox, oy = instance_origin(target.owner)
+				x = x + ox
+				y = y + oy
+			end
+			return {
+				x = x,
+				y = y,
+				w = w,
+				h = h,
+			}
+		end
+		---@cast target ViewInstance
+		local x, y = instance_origin(target)
+		return {
+			x = x,
+			y = y,
+			w = target.layout.w or 0,
+			h = target.layout.h or 0,
+		}
+	end
 
 	---@param batch ViewBatch
 	---@param instance ViewInstance
@@ -491,83 +667,88 @@ local View = {}; do
 	---@param instance ViewInstance
 	---@param x number
 	---@param y number
-	local function pointer_node(instance, x, y)
-		if not instance.mounted then
-			return
-		end
-		local lx, ly = instance:local_point(x, y)
-		if instance.pointer then
-			instance.pointer(lx, ly)
-		end
-		if instance.render_root then
-			pointer_render_node(instance.render_root, lx, ly)
-		end
-		for i = 1, #instance.children do
-			pointer_node(instance.children[i], lx, ly)
-		end
-	end
-
-	---@param instance ViewInstance
-	---@param x number
-	---@param y number
-	---@return ViewInstance?
-	local function click_node(instance, x, y)
+	---@return ViewInstance?, number?, number?
+	hit_instance = function(instance, x, y)
 		if not instance.mounted or not instance:contains(x, y) then
-			return nil
+			return nil, nil, nil
 		end
 		local lx, ly = instance:local_point(x, y)
-		if instance.render_root then
-			local target = click_render_node(instance.render_root, lx, ly)
-			if target then
-				return target
-			end
-		end
 		for i = #instance.children, 1, -1 do
-			local target = click_node(instance.children[i], lx, ly)
+			local target, tx, ty = hit_instance(instance.children[i], lx, ly)
 			if target then
-				return target
+				return target, tx, ty
 			end
 		end
-		if instance.click and instance.click(lx, ly) ~= false then
-			return instance
+		if instance.render_root then
+			local target, tx, ty = hit_render_node(instance.render_root, lx, ly)
+			if target then
+				return target, tx, ty
+			end
 		end
-		return nil
+		if clickable_enabled(instance) then
+			return instance, lx, ly
+		end
+		return nil, nil, nil
 	end
 
 	---@param node ViewRenderNode
 	---@param x number
 	---@param y number
-	pointer_render_node = function(node, x, y)
-		for i = 1, #node.children do
-			local child = node.children[i]
-			if child.kind == "component" and child.instance then
-				local cx, cy = yoga.node_get(child.node)
-				pointer_node(child.instance, x - cx, y - cy)
-			else
-				pointer_render_node(child, x, y)
-			end
-		end
-	end
-
-	---@param node ViewRenderNode
-	---@param x number
-	---@param y number
-	---@return ViewInstance?
-	click_render_node = function(node, x, y)
+	---@return ViewInstance?, number?, number?
+	hit_render_node = function(node, x, y)
 		for i = #node.children, 1, -1 do
 			local child = node.children[i]
+			local cx, cy, cw, ch = yoga.node_get(child.node)
+			if x < cx or y < cy or x > cx + cw or y > cy + ch then
+				goto continue
+			end
 			if child.kind == "component" and child.instance then
-				local cx, cy = yoga.node_get(child.node)
-				local target = click_node(child.instance, x - cx, y - cy)
+				local target, tx, ty = hit_instance(child.instance, x - cx, y - cy)
 				if target then
-					return target
+					return target, tx, ty
 				end
 			else
-				local target = click_render_node(child, x, y)
+				local target, tx, ty = hit_render_node(child, x, y)
 				if target then
-					return target
+					return target, tx, ty
 				end
 			end
+			::continue::
+		end
+		return nil, nil, nil
+	end
+
+	---@param view View
+	---@param x number
+	---@param y number
+	---@return ViewInstance?, number?, number?
+	local function hit_view(view, x, y)
+		for i = #view.instances, 1, -1 do
+			local target, tx, ty = hit_instance(view.instances[i], x, y)
+			if target then
+				return target, tx, ty
+			end
+		end
+		return nil, nil, nil
+	end
+
+	---@param view View
+	---@param target ViewInstance?
+	---@param x number?
+	---@param y number?
+	local function set_hovered(view, target, x, y)
+		local old = view.hovered_instance
+		if old == target then
+			return
+		end
+		if old then
+			set_state(old.hovered, false)
+			call_clickable(old, "on_pointer_leave", pointer_event_at(old, x or 0, y or 0))
+		end
+		view.hovered_instance = target
+		if target then
+			set_state(target.hovered, true)
+			call_clickable(target, "on_pointer_enter", pointer_event_at(target, x or 0, y or 0))
 		end
 	end
 
@@ -610,7 +791,7 @@ local View = {}; do
 			local key = layout_keys[i]
 			local value = props[key]
 			if value ~= nil then
-				style[key] = value
+				style[key] = resolve(value)
 			end
 		end
 		return style
@@ -634,6 +815,7 @@ local View = {}; do
 			return
 		end
 		dispose_render_instances(node)
+		bind_ref(node, nil, node)
 		yoga.node_remove(parent.node, node.node)
 		yoga.node_free(node.node)
 		table.remove(parent.children, index)
@@ -658,6 +840,7 @@ local View = {}; do
 			kind = "root",
 			key = nil,
 			node = yoga.node_new(),
+			owner = instance,
 			children = {},
 			cursor = 1,
 		}
@@ -692,12 +875,14 @@ local View = {}; do
 				key = key,
 				node = yoga.node_new(parent.node),
 				parent = parent,
+				owner = ctx.instance,
 				children = {},
 				cursor = 1,
 			}
 			parent.children[index] = node
 		end
 		node.props = props
+		bind_ref(node, props and props.ref, node)
 		yoga.node_set(node.node, layout_style(props, direction))
 		return node
 	end
@@ -792,9 +977,9 @@ local View = {}; do
 			local font_resource = read_resource "font"
 			local fontid = assert(font_resource.loaded).id
 			local cobj = assert(font_resource.ptr)
-			local size = props and props.size or 16
-			local color = props and props.color or 0xffffffff
-			local align = props and props.align or "LC"
+			local size = props and resolve(props.size) or 16
+			local color = props and resolve(props.color) or 0xffffffff
+			local align = props and resolve(props.align) or "LC"
 			local block = mattext.block(cobj, fontid, size, color, align)
 			out[#out + 1] = command("add", block(tostring(text or ""), pixel_size(w), pixel_size(h)), 0, 0)
 		end
@@ -835,10 +1020,10 @@ local View = {}; do
 	local function layout(props)
 		props = props or {}
 		return {
-			x = props.x,
-			y = props.y,
-			w = props.width,
-			h = props.height,
+			x = resolve(props.x),
+			y = resolve(props.y),
+			w = resolve(props.width),
+			h = resolve(props.height),
 		}
 	end
 
@@ -869,14 +1054,10 @@ local View = {}; do
 	end
 
 	---@param instance ViewInstance
-	---@param exports table
 	---@return table
-	local function component_args(instance, exports)
+	local function component_args(instance)
 		return setmetatable({}, {
 			__index = function(_, key)
-				if key == "dispatch" then
-					return function() return exports end
-				end
 				local props = instance.props
 				instance.view.scope:track(props, key)
 				return props[key]
@@ -914,10 +1095,12 @@ local View = {}; do
 			layout_version = view.scope:value(0),
 			props = {},
 		}, Instance)
-		local exports = {}
-		local args = component_args(instance, exports)
+		local args = component_args(instance)
 		instance.args = args
 		patch_props(instance, props)
+		if append then
+			bind_ref(instance, props and props.ref, instance)
+		end
 
 		local prev = active
 		---@type ViewContext
@@ -935,11 +1118,6 @@ local View = {}; do
 		end
 		local draw = result[2]
 		assert(type(draw) == "function")
-		for key, value in pairs(exports) do
-			assert(not instance[key])
-			instance[key] = value
-		end
-
 		local ctx
 
 		instance.effect = view.scope:effect(function()
@@ -1053,6 +1231,7 @@ local View = {}; do
 				chunk = chunk,
 				node = yoga.node_new(parent.node),
 				parent = parent,
+				owner = ctx.instance,
 				children = {},
 				cursor = 1,
 				instance = mount_component(self, chunk, props, ctx.instance, false),
@@ -1061,8 +1240,11 @@ local View = {}; do
 		else
 			patch_props(assert(node.instance), props)
 		end
+		local instance = assert(node.instance)
+		instance.render_node = node
+		bind_ref(instance, props and props.ref, instance)
 		yoga.node_set(node.node, layout_style(props))
-		return assert(node.instance)
+		return instance
 	end
 
 	function View:update()
@@ -1088,9 +1270,10 @@ local View = {}; do
 	function View:pointer(x, y)
 		self.pointer_x = x
 		self.pointer_y = y
-		for i = 1, #self.instances do
-			local instance = self.instances[i]
-			pointer_node(instance, x, y)
+		local target, tx, ty = hit_view(self, x, y)
+		set_hovered(self, target, x, y)
+		if target then
+			call_clickable(target, "on_pointer_move", pointer_event(target, tx or 0, ty or 0))
 		end
 	end
 
@@ -1103,11 +1286,47 @@ local View = {}; do
 		if x == nil or y == nil then
 			return
 		end
-		for i = #self.instances, 1, -1 do
-			local target = click_node(self.instances[i], x, y)
-			if target then
-				return target
+		local target, tx, ty = hit_view(self, x, y)
+		if target then
+			call_clickable(target, "on_click", pointer_event(target, tx or 0, ty or 0))
+		end
+		return target
+	end
+
+	---@param button integer
+	---@param state integer
+	function View:mouse_button(button, state)
+		local x = self.pointer_x
+		local y = self.pointer_y
+		if x == nil or y == nil then
+			return
+		end
+		local target, tx, ty = hit_view(self, x, y)
+		if state == 1 then
+			local old = self.pressed_instance
+			if old and old ~= target then
+				set_state(old.pressed, false)
 			end
+			self.pressed_instance = target
+			self.pressed_button = target and button or nil
+			if target then
+				set_state(target.pressed, true)
+				call_clickable(target, "on_pointer_down", pointer_event(target, tx or 0, ty or 0, button))
+			end
+			return
+		end
+
+		local pressed = self.pressed_instance
+		local pressed_button = self.pressed_button
+		self.pressed_instance = nil
+		self.pressed_button = nil
+		if not pressed then
+			return
+		end
+		set_state(pressed.pressed, false)
+		call_clickable(pressed, "on_pointer_up", pointer_event_at(pressed, x, y, button))
+		if pressed == target and pressed_button == button and clickable_enabled(pressed) then
+			call_clickable(pressed, "on_click", pointer_event(pressed, tx or 0, ty or 0, button))
 		end
 	end
 
@@ -1191,6 +1410,52 @@ end
 ---@return any
 function M.resource(name)
 	return read_resource(name)
+end
+
+---@param value any
+---@return any
+function M.resolve(value)
+	return resolve(value)
+end
+
+---@param props ViewClickable?
+function M.clickable(props)
+	---@cast active ViewContext
+	local instance = assert(active.instance)
+	instance.clickable = props or {}
+end
+
+---@return ViewValue<boolean>
+function M.hovered()
+	---@cast active ViewContext
+	local instance = assert(active.instance)
+	local hovered = instance.hovered
+	if hovered then
+		return hovered
+	end
+	hovered = active.view.scope:value(false)
+	instance.hovered = hovered
+	return hovered
+end
+
+---@return ViewValue<boolean>
+function M.pressed()
+	---@cast active ViewContext
+	local instance = assert(active.instance)
+	local pressed = instance.pressed
+	if pressed then
+		return pressed
+	end
+	pressed = active.view.scope:value(false)
+	instance.pressed = pressed
+	return pressed
+end
+
+---@return ViewRef
+function M.ref()
+	return setmetatable({
+		current = nil,
+	}, Ref)
 end
 
 ---@param chunk string

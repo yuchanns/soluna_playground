@@ -2,8 +2,6 @@ local soluna = require "soluna"
 
 local args = ...
 
-local MOUSE_PRESS <const> = 1
-
 soluna.set_window_title "Canvas View"
 
 local view = require "core.view".new {
@@ -26,11 +24,8 @@ function C.mouse_move(x, y)
 	view:pointer(x, y)
 end
 
-function C.mouse_button(_, state)
-	if state ~= MOUSE_PRESS then
-		return
-	end
-	view:click()
+function C.mouse_button(button, state)
+	view:mouse_button(button, state)
 end
 
 local batch = args.batch
