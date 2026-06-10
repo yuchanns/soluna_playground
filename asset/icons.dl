@@ -1,0 +1,18 @@
+--
+name : pencil
+image : icons/pencil.png
+--
+name : close
+image : icons/close.png
+--
+name : circle
+image : icons/circle.png
+--
+name : wrench
+image : icons/wrench.png
+--
+name : clock
+image : icons/clock.png
+--
+name : chevron_down
+image : icons/chevron_down.png

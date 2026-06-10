@@ -659,9 +659,10 @@ local View = {}; do
 	---@param y number
 	---@return ViewInstance?, number?, number?
 	hit_instance = function(instance, x, y)
-		if not instance.mounted or not instance:contains(x, y) then
+		if not instance.mounted then
 			return nil, nil, nil
 		end
+		local inside = instance:contains(x, y)
 		local lx, ly = instance:local_point(x, y)
 		for i = #instance.children, 1, -1 do
 			local target, tx, ty = hit_instance(instance.children[i], lx, ly)
@@ -675,7 +676,7 @@ local View = {}; do
 				return target, tx, ty
 			end
 		end
-		if clickable_enabled(instance) then
+		if inside and clickable_enabled(instance) then
 			return instance, lx, ly
 		end
 		return nil, nil, nil
@@ -688,20 +689,19 @@ local View = {}; do
 	hit_render_node = function(node, x, y)
 		for i = #node.children, 1, -1 do
 			local child = node.children[i]
-			local cx, cy, cw, ch = yoga.node_get(child.node)
-			if x < cx or y < cy or x > cx + cw or y > cy + ch then
+			local cx, cy = yoga.node_get(child.node)
+			if child.kind == "component" and child.instance then
+				local lx = x - cx
+				local ly = y - cy
+				local target, tx, ty = hit_instance(child.instance, lx, ly)
+				if target then
+					return target, tx, ty
+				end
 				goto continue
 			end
-			if child.kind == "component" and child.instance then
-				local target, tx, ty = hit_instance(child.instance, x - cx, y - cy)
-				if target then
-					return target, tx, ty
-				end
-			else
-				local target, tx, ty = hit_render_node(child, x, y)
-				if target then
-					return target, tx, ty
-				end
+			local target, tx, ty = hit_render_node(child, x, y)
+			if target then
+				return target, tx, ty
 			end
 			::continue::
 		end

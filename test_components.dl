@@ -1,8 +1,9 @@
-entry : test/counter.lua
+entry : test/components.lua
 width : 1200
 height : 800
 high_dpi : true
-window_title : "Reactive Counter"
+window_title : "Component Showcase"
+background : 0xfff3f4f6
 text_sampler :
   min_filter : linear
   mag_filter : linear
