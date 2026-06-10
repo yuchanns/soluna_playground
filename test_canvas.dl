@@ -1,0 +1,11 @@
+entry : test/canvas.lua
+width : 1200
+height : 800
+high_dpi : true
+window_title : "Canvas View"
+text_sampler :
+  min_filter : linear
+  mag_filter : linear
+  wrap_u : edge
+  wrap_v : edge
+  wrap_w : edge

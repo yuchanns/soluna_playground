@@ -1,5 +1,9 @@
 local font = require "core.font"
 local sfont = require "soluna.font"
+local matquad = require "soluna.material.quad"
+local mattext = require "soluna.material.text"
+local yoga = require "soluna.layout.yoga"
+local floor = math.floor
 ---@class SolunaFile
 ---@field searchpath fun(name: string, path: string): string?
 ---@field load fun(path: string): string?
@@ -12,6 +16,21 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@class ViewCommand
 ---@field name string
 ---@field args table
+---@field draw fun(batch: ViewBatch)?
+
+---@class ViewRenderNode
+---@field kind string
+---@field key any
+---@field chunk string?
+---@field node lightuserdata
+---@field parent ViewRenderNode?
+---@field children ViewRenderNode[]
+---@field cursor integer
+---@field instance ViewInstance?
+---@field draw fun(width: number, height: number)?
+---@field commands ViewCommand[]?
+---@field props table?
+---@field text any
 
 ---@class ViewLayout
 ---@field x number?
@@ -21,6 +40,7 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 
 ---@class ViewBatch
 ---@field layer fun(self: ViewBatch, x?: number, y?: number)
+---@field add fun(self: ViewBatch, ...: any)
 
 ---@class (partial) ViewEffect
 ---@field scope ViewScope
@@ -57,6 +77,10 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field mounted boolean?
 ---@field effect ViewEffect?
 ---@field commands ViewCommand[]?
+---@field render_root ViewRenderNode?
+---@field layout_version ViewValue<integer>
+---@field props table
+---@field args table
 ---@field pointer fun(x: number, y: number)?
 ---@field click fun(x: number, y: number): any?
 
@@ -65,6 +89,7 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field instances ViewInstance[]
 ---@field w number
 ---@field h number
+---@field layout_version ViewValue<integer>
 ---@field pointer_x number?
 ---@field pointer_y number?
 ---@field resources table
@@ -75,9 +100,74 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field disposables ViewComputedState<any>[]?
 ---@field mounting boolean?
 ---@field drawing boolean?
+---@field rendering boolean?
+
+---@class ViewRenderContext
+---@field view View
+---@field instance ViewInstance
+---@field parent ViewRenderNode
+
+---@class ViewModule
+---@field batch ViewBatch
+---@field new fun(args?: table): View
+---@field value fun(value: any): ViewValue<any>
+---@field resource fun(name: string): any
+---@field mount fun(chunk: string, props?: table): ViewInstance
+---@field box fun(props?: table, children?: fun()): ViewRenderNode
+---@field hbox fun(props?: table, children?: fun()): ViewRenderNode
+---@field vbox fun(props?: table, children?: fun()): ViewRenderNode
+---@field canvas fun(props?: table, draw?: fun(width: number, height: number)): ViewRenderNode
+---@field text fun(text: any, props?: table): ViewRenderNode
+---@field computed fun(fn: function): ViewComputed<any>
 
 ---@type ViewContext?
 local active
+
+---@type ViewRenderContext?
+local active_render
+
+---@type ViewCommand[]?
+local active_batch
+
+---@param name string
+---@param ... any
+---@return ViewCommand
+local function command(name, ...args)
+	return {
+		name = name,
+		args = args,
+	}
+end
+
+---@param version ViewValue<integer>
+local function bump_version(version)
+	-- Version bumps must not subscribe the currently running render effect.
+	version(rawget(version, "value") + 1)
+end
+
+---@param value any
+---@return any
+local function resolve(value)
+	if type(value) == "function" then
+		return value()
+	end
+	return value
+end
+
+---@param value number?
+---@return integer
+local function pixel_size(value)
+	return floor((value or 0) + 0.5)
+end
+
+---@param name string
+---@return any
+local function read_resource(name)
+	---@cast active ViewContext
+	local view = active.view
+	view.scope:track(view.resources, name)
+	return assert(view.resources[name])
+end
 
 ---@class (partial) ViewScope
 local Scope = {}; do
@@ -327,12 +417,17 @@ local View = {}; do
 				return
 			end
 			for i = 1, #self.commands do
-				local command = self.commands[i]
-				---@type fun(batch: ViewBatch, ...: any)
-				---@diagnostic disable-next-line: undefined-field
-				local f = assert(batch[command.name])
-				local args = command.args
-				f(batch, table.unpack(args, 1, args.n))
+				local item = self.commands[i]
+				local draw = item.draw
+				if draw then
+					draw(batch)
+				else
+					---@type fun(batch: ViewBatch, ...: any)
+					---@diagnostic disable-next-line: undefined-field
+					local f = assert(batch[item.name])
+					local args = item.args
+					f(batch, table.unpack(args, 1, args.n))
+				end
 			end
 		end
 
@@ -354,6 +449,10 @@ local View = {}; do
 				end
 				self.disposables = nil
 			end
+			if self.render_root then
+				yoga.node_free(self.render_root.node)
+				self.render_root = nil
+			end
 			self.commands = nil
 		end
 	end
@@ -368,6 +467,11 @@ local View = {}; do
 			view.instances[#view.instances + 1] = instance
 		end
 	end
+
+	---@type fun(node: ViewRenderNode, x: number, y: number)
+	local pointer_render_node
+	---@type fun(node: ViewRenderNode, x: number, y: number): ViewInstance?
+	local click_render_node
 
 	---@param batch ViewBatch
 	---@param instance ViewInstance
@@ -395,6 +499,9 @@ local View = {}; do
 		if instance.pointer then
 			instance.pointer(lx, ly)
 		end
+		if instance.render_root then
+			pointer_render_node(instance.render_root, lx, ly)
+		end
 		for i = 1, #instance.children do
 			pointer_node(instance.children[i], lx, ly)
 		end
@@ -409,6 +516,12 @@ local View = {}; do
 			return nil
 		end
 		local lx, ly = instance:local_point(x, y)
+		if instance.render_root then
+			local target = click_render_node(instance.render_root, lx, ly)
+			if target then
+				return target
+			end
+		end
 		for i = #instance.children, 1, -1 do
 			local target = click_node(instance.children[i], lx, ly)
 			if target then
@@ -421,20 +534,300 @@ local View = {}; do
 		return nil
 	end
 
-	local Recorder = {}; do
-		local methods = {}
-		---@param name string
-		function Recorder.__index(_, name)
-			local method = methods[name] or function(self, ...args)
-				local commands = self.commands
-				commands[#commands + 1] = {
-					name = name,
-					args = args,
-				}
+	---@param node ViewRenderNode
+	---@param x number
+	---@param y number
+	pointer_render_node = function(node, x, y)
+		for i = 1, #node.children do
+			local child = node.children[i]
+			if child.kind == "component" and child.instance then
+				local cx, cy = yoga.node_get(child.node)
+				pointer_node(child.instance, x - cx, y - cy)
+			else
+				pointer_render_node(child, x, y)
 			end
-			methods[name] = method
-			return method
 		end
+	end
+
+	---@param node ViewRenderNode
+	---@param x number
+	---@param y number
+	---@return ViewInstance?
+	click_render_node = function(node, x, y)
+		for i = #node.children, 1, -1 do
+			local child = node.children[i]
+			if child.kind == "component" and child.instance then
+				local cx, cy = yoga.node_get(child.node)
+				local target = click_node(child.instance, x - cx, y - cy)
+				if target then
+					return target
+				end
+			else
+				local target = click_render_node(child, x, y)
+				if target then
+					return target
+				end
+			end
+		end
+	end
+
+	local layout_keys <const> = {
+		"width",
+		"height",
+		"minWidth",
+		"maxWidth",
+		"minHeight",
+		"maxHeight",
+		"flex",
+		"justify",
+		"alignItems",
+		"alignContent",
+		"alignSelf",
+		"margin",
+		"padding",
+		"border",
+		"gap",
+		"wrap",
+		"display",
+		"position",
+		"top",
+		"bottom",
+		"left",
+		"right",
+		"aspectRatio",
+	}
+
+	---@param props table?
+	---@param direction string?
+	---@return table
+	local function layout_style(props, direction)
+		props = props or {}
+		local style = {}
+		if direction then
+			style.direction = direction
+		end
+		for i = 1, #layout_keys do
+			local key = layout_keys[i]
+			local value = props[key]
+			if value ~= nil then
+				style[key] = value
+			end
+		end
+		return style
+	end
+
+	---@param node ViewRenderNode
+	local function dispose_render_instances(node)
+		if node.instance then
+			node.instance:destroy()
+		end
+		for i = 1, #node.children do
+			dispose_render_instances(node.children[i])
+		end
+	end
+
+	---@param parent ViewRenderNode
+	---@param index integer
+	local function remove_render_child(parent, index)
+		local node = parent.children[index]
+		if not node then
+			return
+		end
+		dispose_render_instances(node)
+		yoga.node_remove(parent.node, node.node)
+		yoga.node_free(node.node)
+		table.remove(parent.children, index)
+	end
+
+	---@param parent ViewRenderNode
+	---@param index integer
+	local function remove_render_children_from(parent, index)
+		for i = #parent.children, index, -1 do
+			remove_render_child(parent, i)
+		end
+	end
+
+	---@param instance ViewInstance
+	---@return ViewRenderNode
+	local function render_root(instance)
+		local root = instance.render_root
+		if root then
+			return root
+		end
+		root = {
+			kind = "root",
+			key = nil,
+			node = yoga.node_new(),
+			children = {},
+			cursor = 1,
+		}
+		instance.render_root = root
+		return root
+	end
+
+	local mount_component
+	local patch_props
+
+	-- Render nodes patch the Yoga tree by sibling order plus optional key.
+	-- Component nodes keep their setup instance and only patch props on rerender.
+	---@param ctx ViewRenderContext
+	---@param kind string
+	---@param key any
+	---@param props table?
+	---@param direction string?
+	---@return ViewRenderNode
+	local function render_element(ctx, kind, key, props, direction)
+		local parent = ctx.parent
+		local index = parent.cursor
+		parent.cursor = index + 1
+
+		local node = parent.children[index]
+		if node and (node.kind ~= kind or node.key ~= key) then
+			remove_render_children_from(parent, index)
+			node = nil
+		end
+		if not node then
+			node = {
+				kind = kind,
+				key = key,
+				node = yoga.node_new(parent.node),
+				parent = parent,
+				children = {},
+				cursor = 1,
+			}
+			parent.children[index] = node
+		end
+		node.props = props
+		yoga.node_set(node.node, layout_style(props, direction))
+		return node
+	end
+
+	---@param ctx ViewRenderContext
+	---@param node ViewRenderNode
+	---@param children fun()?
+	local function render_children(ctx, node, children)
+		local prev = ctx.parent
+		ctx.parent = node
+		node.cursor = 1
+		if children then
+			children()
+		end
+		remove_render_children_from(node, node.cursor)
+		ctx.parent = prev
+	end
+
+	---@param instance ViewInstance
+	---@param x number
+	---@param y number
+	---@param w number
+	---@param h number
+	local function set_instance_layout(instance, x, y, w, h)
+		local layout = instance.layout
+		if layout.x == x and layout.y == y and layout.w == w and layout.h == h then
+			return
+		end
+		layout.x = x
+		layout.y = y
+		layout.w = w
+		layout.h = h
+		bump_version(instance.layout_version)
+	end
+
+	---@param node ViewRenderNode
+	---@param width number
+	---@param height number
+	local function run_canvas(node, width, height)
+		local draw = node.draw
+		if not draw then
+			node.commands = nil
+			return
+		end
+		local commands = node.commands or {}
+		for i = 1, #commands do
+			commands[i] = nil
+		end
+		node.commands = commands
+		local prev = active_batch
+		active_batch = commands
+		local ok, err = pcall(draw, width, height)
+		active_batch = prev
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	---@param node ViewRenderNode
+	---@param out ViewCommand[]
+	---@param parent_x number
+	---@param parent_y number
+	local function compile_render_node(node, out, parent_x, parent_y)
+		local x, y, w, h = yoga.node_get(node.node)
+		local local_x = x - parent_x
+		local local_y = y - parent_y
+		if node.kind == "component" then
+			local instance = assert(node.instance)
+			set_instance_layout(instance, 0, 0, w, h)
+			out[#out + 1] = {
+				name = "component",
+				args = {},
+				draw = function(batch)
+					batch:layer(local_x, local_y)
+					draw_node(batch, instance)
+					batch:layer()
+				end,
+			}
+			return
+		end
+
+		out[#out + 1] = command("layer", local_x, local_y)
+		local props = node.props
+		if props and props.background ~= nil then
+			local background = resolve(props.background)
+			if background then
+				out[#out + 1] = command("add", matquad.quad(pixel_size(w), pixel_size(h), background), 0, 0)
+			end
+		end
+		if node.kind == "text" then
+			local text = resolve(node.text)
+			local font_resource = read_resource "font"
+			local fontid = assert(font_resource.loaded).id
+			local cobj = assert(font_resource.ptr)
+			local size = props and props.size or 16
+			local color = props and props.color or 0xffffffff
+			local align = props and props.align or "LC"
+			local block = mattext.block(cobj, fontid, size, color, align)
+			out[#out + 1] = command("add", block(tostring(text or ""), pixel_size(w), pixel_size(h)), 0, 0)
+		end
+		if node.kind == "canvas" then
+			run_canvas(node, w, h)
+			local commands = node.commands
+			if commands then
+				for i = 1, #commands do
+					out[#out + 1] = commands[i]
+				end
+			end
+		end
+		for i = 1, #node.children do
+			compile_render_node(node.children[i], out, x, y)
+		end
+		out[#out + 1] = command "layer"
+	end
+
+	---@param instance ViewInstance
+	---@return ViewCommand[]
+	local function compile_render_tree(instance)
+		local root = render_root(instance)
+		yoga.node_set(root.node, {
+			width = instance.layout.w or instance.view.w,
+			height = instance.layout.h or instance.view.h,
+		})
+		yoga.node_calc(root.node)
+
+		local out = {}
+		for i = 1, #root.children do
+			compile_render_node(root.children[i], out, 0, 0)
+		end
+		return out
 	end
 
 	---@param props table?
@@ -444,17 +837,67 @@ local View = {}; do
 		return {
 			x = props.x,
 			y = props.y,
-			w = props.w,
-			h = props.h,
+			w = props.width,
+			h = props.height,
 		}
 	end
 
+	---@param instance ViewInstance
+	---@param key string
+	---@param value any
+	local function set_prop(instance, key, value)
+		local props = instance.props
+		if props[key] == value then
+			return
+		end
+		props[key] = value
+		instance.view.scope:trigger(props, key)
+	end
+
+	---@param instance ViewInstance
+	---@param props table?
+	function patch_props(instance, props)
+		props = props or {}
+		for key in pairs(instance.props) do
+			if props[key] == nil then
+				set_prop(instance, key, nil)
+			end
+		end
+		for key, value in pairs(props) do
+			set_prop(instance, key, value)
+		end
+	end
+
+	---@param instance ViewInstance
+	---@param exports table
+	---@return table
+	local function component_args(instance, exports)
+		return setmetatable({}, {
+			__index = function(_, key)
+				if key == "dispatch" then
+					return function() return exports end
+				end
+				local props = instance.props
+				instance.view.scope:track(props, key)
+				return props[key]
+			end,
+			__newindex = function(_, key, value)
+				set_prop(instance, key, value)
+			end,
+			__pairs = function()
+				return next, instance.props
+			end,
+		})
+	end
+
+	---@param view View
 	---@param chunk string
 	---@param props table?
 	---@param parent ViewInstance?
+	---@param append boolean
 	---@return ViewInstance
-	function View:mount(chunk, props, parent)
-		local path = assert(file.searchpath(chunk, self.resources.component_path))
+	function mount_component(view, chunk, props, parent, append)
+		local path = assert(file.searchpath(chunk, view.resources.component_path))
 		local source = assert(file.load(path))
 		---@diagnostic disable-next-line: assign-type-mismatch
 		chunk = assert(load(source, "@" .. path, "t"))
@@ -462,25 +905,24 @@ local View = {}; do
 
 		---@type ViewInstance
 		local instance = setmetatable({
-			view = self,
+			view = view,
 			parent = parent,
 			children = {},
 			layout = layout(props),
 			disposables = {},
 			mounted = true,
+			layout_version = view.scope:value(0),
+			props = {},
 		}, Instance)
 		local exports = {}
-		local args = {}; if props then
-			for key, value in pairs(props) do
-				args[key] = value
-			end
-		end
-		args.dispatch = function() return exports end
+		local args = component_args(instance, exports)
+		instance.args = args
+		patch_props(instance, props)
 
 		local prev = active
 		---@type ViewContext
 		active = {
-			view = self,
+			view = view,
 			instance = instance,
 			disposables = instance.disposables,
 			mounting = true,
@@ -498,37 +940,129 @@ local View = {}; do
 			instance[key] = value
 		end
 
-		local target, ctx
+		local ctx
 
-		instance.effect = self.scope:effect(function()
+		instance.effect = view.scope:effect(function()
 			if not instance.mounted then
 				return
 			end
-			target = target or setmetatable({
-				commands = {},
-			}, Recorder)
+			if not instance.parent then
+				view.layout_version()
+			end
+			instance.layout_version()
 			---@diagnostic disable-next-line: redefined-local
 			local prev = active
+			local prev_render = active_render
 			---@type ViewContext
 			ctx = ctx or {
-				view = self,
+				view = view,
 				instance = instance,
 				drawing = true,
+				rendering = true,
+			}
+			local render_ctx = {
+				view = view,
+				instance = instance,
+				parent = render_root(instance),
 			}
 			active = ctx
-			for i = 1, #target.commands do
-				target.commands[i] = nil
-			end
-			local ok, err = pcall(draw, target)
+			active_render = render_ctx
+			local ok, err = pcall(function()
+				render_ctx.parent.cursor = 1
+				draw()
+				remove_render_children_from(render_ctx.parent, render_ctx.parent.cursor)
+				instance.commands = compile_render_tree(instance)
+			end)
 			active = prev
+			active_render = prev_render
 			if not ok then
 				error(err, 0)
 			end
-			instance.commands = target.commands
 		end)
 
-		append_child(self, parent, instance)
+		if append then
+			append_child(view, parent, instance)
+		end
 		return instance
+	end
+
+	---@param chunk string
+	---@param props table?
+	---@param parent ViewInstance?
+	---@return ViewInstance
+	function View:mount(chunk, props, parent)
+		return mount_component(self, chunk, props, parent, true)
+	end
+
+	---@param props table?
+	---@param direction string?
+	---@param children fun()?
+	---@return ViewRenderNode
+	function View:render_element(props, direction, children)
+		local ctx = assert(active_render)
+		assert(ctx.view == self)
+		local node = render_element(ctx, "box", props and props.key, props, direction)
+		render_children(ctx, node, children)
+		return node
+	end
+
+	---@param props table?
+	---@param draw fun(width: number, height: number)?
+	---@return ViewRenderNode
+	function View:render_canvas(props, draw)
+		local ctx = assert(active_render)
+		assert(ctx.view == self)
+		local node = render_element(ctx, "canvas", props and props.key, props)
+		node.draw = draw
+		render_children(ctx, node)
+		return node
+	end
+
+	---@param text any
+	---@param props table?
+	---@return ViewRenderNode
+	function View:render_text(text, props)
+		local ctx = assert(active_render)
+		assert(ctx.view == self)
+		local node = render_element(ctx, "text", props and props.key, props)
+		node.text = text
+		remove_render_children_from(node, 1)
+		return node
+	end
+
+	---@param chunk string
+	---@param props table?
+	---@param key any
+	---@return ViewInstance
+	function View:render_component(chunk, props, key)
+		local ctx = assert(active_render)
+		assert(ctx.view == self)
+		local parent = ctx.parent
+		local index = parent.cursor
+		parent.cursor = index + 1
+
+		local node = parent.children[index]
+		if node and (node.kind ~= "component" or node.key ~= key or node.chunk ~= chunk) then
+			remove_render_children_from(parent, index)
+			node = nil
+		end
+		if not node then
+			node = {
+				kind = "component",
+				key = key,
+				chunk = chunk,
+				node = yoga.node_new(parent.node),
+				parent = parent,
+				children = {},
+				cursor = 1,
+				instance = mount_component(self, chunk, props, ctx.instance, false),
+			}
+			parent.children[index] = node
+		else
+			patch_props(assert(node.instance), props)
+		end
+		yoga.node_set(node.node, layout_style(props))
+		return assert(node.instance)
 	end
 
 	function View:update()
@@ -538,8 +1072,12 @@ local View = {}; do
 	---@param w number
 	---@param h number
 	function View:resize(w, h)
+		if self.w == w and self.h == h then
+			return
+		end
 		self.w = w
 		self.h = h
+		bump_version(self.layout_version)
 		if self.pointer_x ~= nil and self.pointer_y ~= nil then
 			self:pointer(self.pointer_x, self.pointer_y)
 		end
@@ -594,19 +1132,22 @@ local M = {}
 ---@return View
 function M.new(args)
 	args = args or {}
+	---@type ViewScope
+	local scope = setmetatable({
+		targets = setmetatable({}, {
+			__mode = "k",
+		}),
+		queue = {},
+		queue_head = 1,
+		queue_tail = 0,
+	}, Scope)
 	---@type View
 	return setmetatable({
-		scope = setmetatable({
-			targets = setmetatable({}, {
-				__mode = "k",
-			}),
-			queue = {},
-			queue_head = 1,
-			queue_tail = 0,
-		}, Scope),
+		scope = scope,
 		instances = {},
 		w = args.w or args.width or 0,
 		h = args.h or args.height or 0,
+		layout_version = scope:value(0),
 		pointer_x = nil,
 		pointer_y = nil,
 		resources = {
@@ -614,7 +1155,7 @@ function M.new(args)
 				loaded = font.load(),
 				ptr = sfont.cobj(),
 			},
-			component_path = args.component_path or COMPONENT_PATH
+			component_path = args.component_path or COMPONENT_PATH,
 		},
 	}, View)
 end
@@ -649,23 +1190,87 @@ end
 ---@param name string
 ---@return any
 function M.resource(name)
-	---@cast active ViewContext
-	local view = active.view
-	view.scope:track(view.resources, name)
-	return assert(view.resources[name])
+	return read_resource(name)
 end
 
 ---@param chunk string
 ---@param props table?
 ---@return ViewInstance
 function M.mount(chunk, props)
-	local current = assert(active, "view.mount requires an active component context")
-	if current.drawing then
-		error("view.mount cannot be called while drawing", 2)
+	if active_render and not (active and active.mounting) then
+		return active_render.view:render_component(chunk, props, props and props.key)
 	end
-	assert(current.mounting and current.instance, "view.mount can only be called while mounting a component")
+	local current = assert(active)
+	if current.drawing then
+		error("mount cannot be called while drawing", 2)
+	end
+	assert(current.mounting and current.instance, "mount can only be called before the component is mounted")
 	return current.view:mount(chunk, props, current.instance)
 end
+
+---@param props table?
+---@param children fun()?
+---@param direction string?
+---@return ViewRenderNode
+local function element(props, children, direction)
+	local ctx = assert(active_render, "element can only be used while rendering")
+	return ctx.view:render_element(props, direction, children)
+end
+
+---@param props table?
+---@param children fun()?
+---@return ViewRenderNode
+function M.box(props, children)
+	return element(props, children)
+end
+
+---@param props table?
+---@param children fun()?
+---@return ViewRenderNode
+function M.hbox(props, children)
+	return element(props, children, "row")
+end
+
+---@param props table?
+---@param children fun()?
+---@return ViewRenderNode
+function M.vbox(props, children)
+	return element(props, children, "column")
+end
+
+---@param props table?
+---@param draw fun(width: number, height: number)?
+---@return ViewRenderNode
+function M.canvas(props, draw)
+	local ctx = assert(active_render, "canvas can only be used while rendering")
+	return ctx.view:render_canvas(props, draw)
+end
+
+---@param text any
+---@param props table?
+---@return ViewRenderNode
+function M.text(text, props)
+	local ctx = assert(active_render, "text can only be used while rendering")
+	return ctx.view:render_text(text, props)
+end
+
+local Batch = {}; do
+	local methods = {}
+
+	---@param name string
+	function Batch.__index(_, name)
+		local method = methods[name] or function(_, ...args)
+			local commands = assert(active_batch, "batch can only be used inside canvas")
+			commands[#commands + 1] = command(name, table.unpack(args, 1, args.n))
+		end
+		methods[name] = method
+		return method
+	end
+end
+
+local batch = setmetatable({}, Batch)
+---@cast batch ViewBatch
+M.batch = batch
 
 ---@generic T
 ---@param fn fun(): T, ...
@@ -700,4 +1305,5 @@ function M.computed(fn)
 	return computed
 end
 
+---@cast M ViewModule
 return M

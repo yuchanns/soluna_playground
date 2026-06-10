@@ -4,7 +4,7 @@ local args = ...
 
 local MOUSE_PRESS <const> = 1
 
-soluna.set_window_title "Reactive Counter"
+soluna.set_window_title "Canvas View"
 
 local view = require "core.view".new {
 	w = args.width,
@@ -13,9 +13,9 @@ local view = require "core.view".new {
 
 local C = {}
 
-view:mount("counter", {
+view:mount("canvas", {
 	width = 460,
-	height = 300,
+	height = 260,
 })
 
 function C.window_resize(w, h)
