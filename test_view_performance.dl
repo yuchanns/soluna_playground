@@ -1,0 +1,15 @@
+entry : test/performance.lua
+width : 1200
+height : 800
+high_dpi : true
+window_title : "View Performance Benchmark"
+background : 0xfff3f4f6
+perf_rows : 1000
+perf_update_step : 10
+perf_parent_interval : 60
+text_sampler :
+  min_filter : linear
+  mag_filter : linear
+  wrap_u : edge
+  wrap_v : edge
+  wrap_w : edge
