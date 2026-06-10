@@ -127,13 +127,13 @@ return function()
 			height = "100%",
 			gap = 24,
 		}, function()
-			view.text("Component Showcase", {
-				width = "100%",
-				height = 38,
-				size = 30,
-				color = TEXT,
-				align = "LV",
-			})
+				view.text("Component Showcase", {
+					width = "100%",
+					height = 38,
+					size = 30,
+					color = TEXT,
+					align = "LV",
+				})
 			view.text("Examples for the reactive view runtime.", {
 				width = "100%",
 				height = 24,

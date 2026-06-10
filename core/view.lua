@@ -137,6 +137,7 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field hovered_instance ViewInstance?
 ---@field pressed_instance ViewInstance?
 ---@field pressed_button integer?
+---@field stats ViewStatistics
 ---@field resources table
 ---@field animations ViewAnimation[]
 ---@field effect_order integer
@@ -174,6 +175,9 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field y number
 ---@field w number
 ---@field h number
+
+---@class ViewStatistics
+---@field render_count integer
 
 ---@class (partial) ViewRef
 ---@field current any
@@ -1468,6 +1472,7 @@ local View = {}; do
 			active = ctx
 			active_render = render_ctx
 			local ok, err = pcall(function()
+				view.stats.render_count = view.stats.render_count + 1
 				render_ctx.parent.cursor = 1
 				draw()
 				remove_render_children_from(render_ctx.parent, render_ctx.parent.cursor)
@@ -1741,6 +1746,11 @@ local View = {}; do
 		end
 	end
 
+	---@return ViewStatistics
+	function View:statistics()
+		return self.stats
+	end
+
 	---@param name string
 	---@param resource any
 	function View:set_resource(name, resource)
@@ -1773,6 +1783,9 @@ function M.new(args)
 		layout_version = scope:value(0),
 		animations = {},
 		effect_order = 0,
+		stats = {
+			render_count = 0,
+		},
 		resources = {
 			font = {
 				loaded = font.load(),
