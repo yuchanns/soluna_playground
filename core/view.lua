@@ -4,6 +4,8 @@ local matquad = require "soluna.material.quad"
 local mattext = require "soluna.material.text"
 local yoga = require "soluna.layout.yoga"
 local floor = math.floor
+local min = math.min
+local max = math.max
 ---@class SolunaFile
 ---@field searchpath fun(name: string, path: string): string?
 ---@field load fun(path: string): string?
@@ -17,6 +19,32 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field name string
 ---@field args table
 ---@field draw fun(batch: ViewBatch)?
+
+---@alias ViewAnimatedTarget fun(): number
+
+---@class (partial) ViewAnimation
+---@overload fun(): number
+---@field view View
+---@field value ViewValue<number>
+---@field from number
+---@field to number
+---@field elapsed number
+---@field duration number
+---@field easing fun(t: number): number
+---@field active boolean?
+---@field listed boolean?
+---@field stopped boolean?
+---@field effect ViewEffect?
+
+---@class ViewTransitionRenderState
+---@field show boolean
+---@field progress number
+---@field phase string
+
+---@class ViewTransitionState
+---@field animation ViewAnimation
+---@field show boolean
+---@field mounted boolean
 
 ---@class ViewRenderNode
 ---@field kind string
@@ -33,6 +61,7 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field props table?
 ---@field text any
 ---@field ref ViewRef?
+---@field transition ViewTransitionState?
 
 ---@class ViewLayout
 ---@field x number?
@@ -41,7 +70,7 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field h number?
 
 ---@class ViewBatch
----@field layer fun(self: ViewBatch, x?: number, y?: number)
+---@field layer fun(self: ViewBatch, ...: number)
 ---@field add fun(self: ViewBatch, ...: any)
 
 ---@class (partial) ViewEffect
@@ -70,12 +99,18 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field effect ViewEffect?
 ---@field value ViewValue<T>
 
+---@alias ViewDisposable ViewComputedState<any>|ViewAnimation
+
+---@class (partial) ViewAnimatedState
+---@field animation ViewAnimation
+---@field effect ViewEffect?
+
 ---@class (partial) ViewInstance
 ---@field view View
 ---@field parent ViewInstance?
 ---@field children ViewInstance[]
 ---@field layout ViewLayout
----@field disposables ViewComputedState<any>[]?
+---@field disposables ViewDisposable[]?
 ---@field mounted boolean?
 ---@field effect ViewEffect?
 ---@field commands ViewCommand[]?
@@ -101,11 +136,12 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field pressed_instance ViewInstance?
 ---@field pressed_button integer?
 ---@field resources table
+---@field animations ViewAnimation[]
 
 ---@class ViewContext
 ---@field view View
 ---@field instance ViewInstance?
----@field disposables ViewComputedState<any>[]?
+---@field disposables ViewDisposable[]?
 ---@field mounting boolean?
 ---@field drawing boolean?
 ---@field rendering boolean?
@@ -156,6 +192,10 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field pressed fun(): ViewValue<boolean>
 ---@field ref fun(): ViewRef
 ---@field computed fun(fn: function): ViewComputed<any>
+---@field animated fun(fn: ViewAnimatedTarget, opts?: table): ViewAnimation
+---@field transition fun(props: table, children: fun(state: ViewTransitionRenderState))
+---@field lerp fun(a: number, b: number, t: number): number
+---@field lerp_color fun(a: integer, b: integer, t: number): integer
 
 ---@type ViewContext?
 local active
@@ -186,6 +226,74 @@ end
 ---@return integer
 local function pixel_size(value)
 	return floor((value or 0) + 0.5)
+end
+
+---@param value number
+---@return number
+local function clamp01(value)
+	return min(max(value, 0), 1)
+end
+
+---@param a number
+---@param b number
+---@param t number
+---@return number
+local function lerp(a, b, t)
+	return a + (b - a) * t
+end
+
+---@type table<any, fun(t: number): number>
+local easings <const> = {
+	linear = function(t)
+		return t
+	end,
+	out_quad = function(t)
+		return 1 - (1 - t) * (1 - t)
+	end,
+	out_cubic = function(t)
+		local u = 1 - t
+		return 1 - u * u * u
+	end,
+	in_out_cubic = function(t)
+		if t < 0.5 then
+			return 4 * t * t * t
+		end
+		local u = -2 * t + 2
+		return 1 - u * u * u / 2
+	end,
+}
+
+---@param opts table?
+---@return fun(t: number): number
+local function easing(opts)
+	local name = opts and opts.easing or "out_cubic"
+	if type(name) == "function" then
+		return name
+	end
+	local curve = easings[name]
+	---@diagnostic disable-next-line: unnecessary-assert, redundant-return-value
+	return assert(curve, "unknown easing " .. tostring(name))
+end
+
+---@param color integer
+---@return integer, integer, integer, integer
+local function color_channels(color)
+	return (color >> 24) & 0xff, (color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff
+end
+
+---@param a integer
+---@param b integer
+---@param t number
+---@return integer
+local function lerp_color(a, b, t)
+	t = clamp01(t)
+	local aa, ar, ag, ab = color_channels(a)
+	local ba, br, bg, bb = color_channels(b)
+	local ca = floor(lerp(aa, ba, t) + 0.5)
+	local cr = floor(lerp(ar, br, t) + 0.5)
+	local cg = floor(lerp(ag, bg, t) + 0.5)
+	local cb = floor(lerp(ab, bb, t) + 0.5)
+	return (ca << 24) | (cr << 16) | (cg << 8) | cb
 end
 
 ---@param name string
@@ -390,6 +498,69 @@ local Scope = {}; do
 		end
 		self.queue_head = 1
 		self.queue_tail = 0
+	end
+end
+
+---@class (partial) ViewAnimation
+local Animation = {}; do
+	Animation.__index = Animation
+
+	---@return number
+	function Animation:__call()
+		return self.value()
+	end
+
+	---@param target number
+	function Animation:jump(target)
+		self.from = target
+		self.to = target
+		self.elapsed = 0
+		self.active = nil
+		self.value(target)
+	end
+
+	---@param target number
+	function Animation:retarget(target)
+		local current = rawget(self.value, "value") or target
+		if current == target then
+			self:jump(target)
+			return
+		end
+		if self.duration <= 0 then
+			self:jump(target)
+			return
+		end
+		self.from = current
+		self.to = target
+		self.elapsed = 0
+		self.active = true
+		self.view:add_animation(self)
+	end
+
+	---@param dt number
+	---@return boolean
+	function Animation:step(dt)
+		if self.stopped or not self.active then
+			return false
+		end
+		self.elapsed = min(self.elapsed + max(dt, 0), self.duration)
+		local t = clamp01(self.elapsed / self.duration)
+		local value = lerp(self.from, self.to, self.easing(t))
+		self.value(value)
+		if t >= 1 then
+			self:jump(self.to)
+			return false
+		end
+		return true
+	end
+
+	function Animation:stop()
+		self.stopped = true
+		self.active = nil
+		if self.effect then
+			self.effect:stop()
+			self.effect = nil
+		end
 	end
 end
 
@@ -789,6 +960,10 @@ local View = {}; do
 
 	---@param node ViewRenderNode
 	local function dispose_render_instances(node)
+		if node.transition then
+			node.transition.animation:stop()
+			node.transition = nil
+		end
 		if node.instance then
 			node.instance:destroy()
 		end
@@ -840,6 +1015,100 @@ local View = {}; do
 
 	local mount_component
 	local patch_props
+
+	---@type table<any, boolean>
+	local transition_prop_keys <const> = {
+		show = true,
+		duration = true,
+		easing = true,
+		appear = true,
+	}
+
+	---@param props table?
+	---@param mounted boolean
+	---@return table
+	local function transition_style(props, mounted)
+		local style = {}
+		for key, value in pairs(props or {}) do
+			local internal = transition_prop_keys[key] == true
+			if not internal then
+				style[key] = value
+			end
+		end
+		if mounted then
+			style.display = style.display or "flex"
+		else
+			style.display = "none"
+		end
+		return style
+	end
+
+	---@param view View
+	---@param props table?
+	---@return ViewTransitionState
+	local function create_transition(view, props)
+		props = props or {}
+		local show = props.show == true
+		local initial = show and 1 or 0
+		---@type ViewAnimation
+		local animation = setmetatable({
+			view = view,
+			value = view.scope:value(initial),
+			from = initial,
+			to = initial,
+			elapsed = 0,
+			duration = props.duration or 0.14,
+			easing = easing(props),
+		}, Animation)
+		---@type ViewTransitionState
+		local state = {
+			animation = animation,
+			show = show,
+			mounted = show,
+		}
+		if show and props.appear then
+			animation:jump(0)
+			animation:retarget(1)
+		end
+		return state
+	end
+
+	---@param state ViewTransitionState
+	---@param props table?
+	local function update_transition(state, props)
+		props = props or {}
+		local show = props.show == true
+		local target = show and 1 or 0
+		state.animation.duration = props.duration or 0.14
+		state.animation.easing = easing(props)
+		state.show = show
+		if show then
+			state.mounted = true
+		end
+		if state.animation.to ~= target then
+			state.animation:retarget(target)
+		end
+	end
+
+	---@param state ViewTransitionState
+	---@return ViewTransitionRenderState
+	local function transition_render_state(state)
+		local progress = state.animation.value()
+		local phase
+		if state.show then
+			phase = progress >= 1 and "entered" or "enter"
+		else
+			phase = progress <= 0 and "left" or "leave"
+		end
+		if phase == "left" then
+			state.mounted = false
+		end
+		return {
+			show = state.show,
+			progress = progress,
+			phase = phase,
+		}
+	end
 
 	-- Render nodes patch the Yoga tree by sibling order plus optional key.
 	-- Component nodes keep their setup instance and only patch props on rerender.
@@ -931,6 +1200,15 @@ local View = {}; do
 		end
 	end
 
+	---@param props table?
+	---@return number, number, number, number
+	local function draw_transform(props)
+		if not props then
+			return 0, 0, 1, 0
+		end
+		return props.translateX or 0, props.translateY or 0, props.scale or 1, props.rotation or 0
+	end
+
 	---@param node ViewRenderNode
 	---@param out ViewCommand[]
 	---@param parent_x number
@@ -939,6 +1217,10 @@ local View = {}; do
 		local x, y, w, h = yoga.node_get(node.node)
 		local local_x = x - parent_x
 		local local_y = y - parent_y
+		local props = node.props
+		local translate_x, translate_y, scale, rotation = draw_transform(props)
+		local draw_x = local_x + translate_x
+		local draw_y = local_y + translate_y
 		if node.kind == "component" then
 			local instance = assert(node.instance)
 			set_instance_layout(instance, 0, 0, w, h)
@@ -946,7 +1228,11 @@ local View = {}; do
 				name = "component",
 				args = {},
 				draw = function(batch)
-					batch:layer(local_x, local_y)
+					if scale ~= 1 or rotation ~= 0 then
+						batch:layer(scale, rotation, draw_x, draw_y)
+					else
+						batch:layer(draw_x, draw_y)
+					end
 					draw_node(batch, instance)
 					batch:layer()
 				end,
@@ -954,8 +1240,11 @@ local View = {}; do
 			return
 		end
 
-		out[#out + 1] = command("layer", local_x, local_y)
-		local props = node.props
+		if scale ~= 1 or rotation ~= 0 then
+			out[#out + 1] = command("layer", scale, rotation, draw_x, draw_y)
+		else
+			out[#out + 1] = command("layer", draw_x, draw_y)
+		end
 		if props and props.background ~= nil then
 			local background = props.background
 			if background then
@@ -1237,7 +1526,86 @@ local View = {}; do
 		return instance
 	end
 
-	function View:update()
+	---@param props table
+	---@param children fun(state: ViewTransitionRenderState)
+	---@return ViewRenderNode
+	function View:render_transition(props, children)
+		local ctx = assert(active_render)
+		assert(ctx.view == self)
+		local parent = ctx.parent
+		local index = parent.cursor
+		parent.cursor = index + 1
+
+		local key = props.key
+		local node = parent.children[index]
+		if node and (node.kind ~= "transition" or node.key ~= key) then
+			remove_render_children_from(parent, index)
+			node = nil
+		end
+		if not node then
+			node = {
+				kind = "transition",
+				key = key,
+				node = yoga.node_new(parent.node),
+				parent = parent,
+				owner = ctx.instance,
+				children = {},
+				cursor = 1,
+				transition = create_transition(self, props),
+			}
+			parent.children[index] = node
+		else
+			update_transition(assert(node.transition), props)
+		end
+
+		local state = transition_render_state(assert(node.transition))
+		local mounted = state.phase ~= "left"
+		node.props = transition_style(props, mounted)
+		bind_ref(node, props.ref, node)
+		yoga.node_set(node.node, layout_style(node.props))
+		if mounted then
+			local prev = ctx.parent
+			ctx.parent = node
+			node.cursor = 1
+			children(state)
+			remove_render_children_from(node, node.cursor)
+			ctx.parent = prev
+		else
+			remove_render_children_from(node, 1)
+		end
+		return node
+	end
+
+	---@param animation ViewAnimation
+	function View:add_animation(animation)
+		if animation.listed then
+			return
+		end
+		animation.listed = true
+		local animations = self.animations
+		animations[#animations + 1] = animation
+	end
+
+	---@param dt number
+	local function step_animations(self, dt)
+		local animations = self.animations
+		local i = 1
+		while i <= #animations do
+			local animation = animations[i]
+			if animation.stopped or not animation:step(dt) then
+				animation.listed = nil
+				animations[i] = animations[#animations]
+				animations[#animations] = nil
+			else
+				i = i + 1
+			end
+		end
+	end
+
+	---@param dt number?
+	function View:update(dt)
+		self.scope:flush()
+		step_animations(self, dt or 0)
 		return self.scope:flush()
 	end
 
@@ -1359,6 +1727,7 @@ function M.new(args)
 		layout_version = scope:value(0),
 		pointer_x = nil,
 		pointer_y = nil,
+		animations = {},
 		resources = {
 			font = {
 				loaded = font.load(),
@@ -1400,6 +1769,54 @@ end
 ---@return any
 function M.resource(name)
 	return read_resource(name)
+end
+
+---@param fn ViewAnimatedTarget
+---@param opts table?
+---@return ViewAnimation
+function M.animated(fn, opts)
+	---@cast active ViewContext
+	assert(active.disposables)
+	local view = active.view
+	opts = opts or {}
+	---@type ViewAnimation
+	local animation = setmetatable({
+		view = view,
+		value = view.scope:value(0),
+		from = 0,
+		to = 0,
+		elapsed = 0,
+		duration = opts.duration or 0.14,
+		easing = easing(opts),
+	}, Animation)
+	local first = true
+	---@type ViewContext
+	local ctx = {
+		view = view,
+	}
+	animation.effect = view.scope:effect(function()
+		local prev = active
+		active = ctx
+		local ok, target = pcall(fn)
+		active = prev
+		if not ok then
+			error(target, 0)
+		end
+		assert(type(target) == "number", "animated target must be a number")
+		if first then
+			first = false
+			if opts.appear then
+				animation:jump(opts.from or 0)
+				animation:retarget(target)
+			else
+				animation:jump(target)
+			end
+			return
+		end
+		animation:retarget(target)
+	end)
+	active.disposables[#active.disposables + 1] = animation
+	return animation
 end
 
 ---@param props ViewClickable?
@@ -1487,6 +1904,14 @@ function M.vbox(props, children)
 	return element(props, children, "column")
 end
 
+---@param props table
+---@param children fun(state: ViewTransitionRenderState)
+---@return ViewRenderNode
+function M.transition(props, children)
+	local ctx = assert(active_render, "transition can only be used while rendering")
+	return ctx.view:render_transition(props, children)
+end
+
 ---@param props table?
 ---@param draw fun(width: number, height: number)?
 ---@return ViewRenderNode
@@ -1501,6 +1926,22 @@ end
 function M.text(text, props)
 	local ctx = assert(active_render, "text can only be used while rendering")
 	return ctx.view:render_text(text, props)
+end
+
+---@param a number
+---@param b number
+---@param t number
+---@return number
+function M.lerp(a, b, t)
+	return lerp(a, b, clamp01(t))
+end
+
+---@param a integer
+---@param b integer
+---@param t number
+---@return integer
+function M.lerp_color(a, b, t)
+	return lerp_color(a, b, t)
 end
 
 local Batch = {}; do

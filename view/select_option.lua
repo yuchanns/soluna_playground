@@ -12,6 +12,7 @@ local hover_background <const> = args.hover_background or 0xffeff6ff
 local selected_background <const> = args.selected_background or 0xffdbeafe
 local text_color <const> = args.text_color or 0xff374151
 local selected_text_color <const> = args.selected_text_color or 0xff1d4ed8
+local radius <const> = args.radius or 0
 
 local hovered = view.hovered()
 local pressed = view.pressed()
@@ -43,15 +44,30 @@ return function()
 	view.box({
 		width = width,
 		height = height,
-		background = fill,
-		padding = 10,
 	}, function()
-		view.text(label, {
+		if fill then
+			view.mount("view/surface", {
+				position = "absolute",
+				left = 0,
+				top = 0,
+				width = "100%",
+				height = "100%",
+				fill = fill,
+				radius = radius,
+			})
+		end
+		view.box({
 			width = "100%",
 			height = "100%",
-			size = text_size,
-			color = color,
-			align = "LV",
-		})
+			padding = 10,
+		}, function()
+			view.text(label, {
+				width = "100%",
+				height = "100%",
+				size = text_size,
+				color = color,
+				align = "LV",
+			})
+		end)
 	end)
 end

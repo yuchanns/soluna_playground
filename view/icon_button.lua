@@ -11,6 +11,7 @@ local pressed_background <const> = args.pressed_background or 0xffbfdbfe
 local disabled_background <const> = args.disabled_background or 0xfff3f4f6
 local text_color <const> = args.text_color or 0xff1f2937
 local disabled_text_color <const> = args.disabled_text_color or 0xff9ca3af
+local radius <const> = args.radius or 6
 
 local hovered = view.hovered()
 local pressed = view.pressed()
@@ -37,8 +38,16 @@ return function()
 	view.box({
 		width = size,
 		height = size,
-		background = fill,
 	}, function()
+		view.mount("view/surface", {
+			position = "absolute",
+			left = 0,
+			top = 0,
+			width = "100%",
+			height = "100%",
+			fill = fill,
+			radius = radius,
+		})
 		view.mount("view/icon", {
 			width = "100%",
 			height = "100%",

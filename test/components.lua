@@ -12,6 +12,7 @@ local view = require "core.view".new {
 }
 
 local C = {}
+local FRAME_DT <const> = 1 / 60
 
 local root = view:mount("components_showcase", {
 	width = args.width,
@@ -35,7 +36,7 @@ end
 local batch = args.batch
 
 function C.frame()
-	view:update()
+	view:update(FRAME_DT)
 
 	view:draw(batch)
 end

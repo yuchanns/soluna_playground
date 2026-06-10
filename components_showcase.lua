@@ -62,35 +62,48 @@ view.clickable {
 
 local function card(title, subtitle, layout, children)
 	local style = {
-		background = CARD_BG,
-		padding = 18,
-		gap = 12,
 	}
 	for key, value in pairs(layout) do
 		style[key] = value
 	end
 
-	view.vbox(style, function()
-		view.text(title, {
+	view.box(style, function()
+		view.mount("view/surface", {
+			position = "absolute",
+			left = 0,
+			top = 0,
 			width = "100%",
-			height = 26,
-			size = 20,
-			color = TEXT,
-			align = "LV",
+			height = "100%",
+			fill = CARD_BG,
+			radius = 10,
 		})
-		view.text(subtitle, {
+		view.vbox({
 			width = "100%",
-			height = 22,
-			size = 14,
-			color = MUTED,
-			align = "LV",
-		})
-		view.box {
-			width = "100%",
-			height = 1,
-			background = LINE,
-		}
-		children()
+			height = "100%",
+			padding = 18,
+			gap = 12,
+		}, function()
+			view.text(title, {
+				width = "100%",
+				height = 26,
+				size = 20,
+				color = TEXT,
+				align = "LV",
+			})
+			view.text(subtitle, {
+				width = "100%",
+				height = 22,
+				size = 14,
+				color = MUTED,
+				align = "LV",
+			})
+			view.box {
+				width = "100%",
+				height = 1,
+				background = LINE,
+			}
+			children()
+		end)
 	end)
 end
 
@@ -115,7 +128,7 @@ return function()
 			color = TEXT,
 			align = "LV",
 		})
-		view.text("Neutral examples for the reactive view runtime.", {
+		view.text("Examples for the reactive view runtime.", {
 			width = "100%",
 			height = 24,
 			size = 16,
@@ -199,28 +212,41 @@ return function()
 				width = 340,
 				height = "100%",
 			}, function()
-				view.vbox({
+				view.box({
 					width = 236,
 					height = 136,
-					background = 0xfff9fafb,
-					padding = 8,
-					gap = 4,
 				}, function()
-					for i = 1, #nav_items do
-						local item = nav_items[i]
-						view.mount("view/nav_item", {
-							key = item.id,
-							id = item.id,
-							icon = item.icon,
-							label = item.label,
-							width = "100%",
-							height = 36,
-							active = item.id == active_nav,
-							on_select = function(id)
-								selected_nav(id)
-							end,
-						})
-					end
+					view.mount("view/surface", {
+						position = "absolute",
+						left = 0,
+						top = 0,
+						width = "100%",
+						height = "100%",
+						fill = 0xfff9fafb,
+						radius = 8,
+					})
+					view.vbox({
+						width = 236,
+						height = 136,
+						padding = 8,
+						gap = 4,
+					}, function()
+						for i = 1, #nav_items do
+							local item = nav_items[i]
+							view.mount("view/nav_item", {
+								key = item.id,
+								id = item.id,
+								icon = item.icon,
+								label = item.label,
+								width = "100%",
+								height = 36,
+								active = item.id == active_nav,
+								on_select = function(id)
+									selected_nav(id)
+								end,
+							})
+						end
+					end)
 				end)
 				view.text("Selected: " .. active_nav, {
 					width = "100%",

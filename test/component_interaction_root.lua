@@ -17,6 +17,10 @@ local options <const> = {
 		value = "medium",
 		label = "Medium",
 	},
+	{
+		value = "large",
+		label = "Large",
+	},
 }
 
 return function()

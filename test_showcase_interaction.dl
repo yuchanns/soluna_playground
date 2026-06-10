@@ -1,8 +1,9 @@
-entry : test/component_interaction.lua
-width : 400
-height : 320
+entry : test/showcase_interaction.lua
+width : 1200
+height : 800
 high_dpi : true
-window_title : "Component Interaction Test"
+window_title : "Showcase Interaction Test"
+background : 0xfff3f4f6
 extlua_entry : playground_init
 extlua_preload : playground
 extlua_material :

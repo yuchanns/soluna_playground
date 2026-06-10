@@ -16,6 +16,7 @@ local active_background <const> = args.active_background or 0xffdbeafe
 local text_color <const> = args.text_color or 0xff374151
 local active_text_color <const> = args.active_text_color or 0xff1d4ed8
 local marker_color <const> = args.marker_color or 0xff2563eb
+local radius <const> = args.radius or 4
 
 local hovered = view.hovered()
 local pressed = view.pressed()
@@ -44,37 +45,52 @@ return function()
 		fill = hover_background
 	end
 
-	view.hbox({
+	view.box({
 		width = width,
 		height = height,
-		background = fill,
-		alignItems = "center",
-		padding = 8,
-		gap = 8,
 	}, function()
-		if icon then
-			view.mount("view/icon", {
-				width = 22,
+		if fill then
+			view.mount("view/surface", {
+				position = "absolute",
+				left = 0,
+				top = 0,
+				width = "100%",
 				height = "100%",
-				name = icon,
-				size = icon_size,
-				color = marker_color,
-			})
-		else
-			view.text(marker, {
-				width = 22,
-				height = "100%",
-				size = text_size,
-				color = marker_color,
-				align = "CV",
+				fill = fill,
+				radius = radius,
 			})
 		end
-		view.text(label, {
-			flex = 1,
+		view.hbox({
+			width = "100%",
 			height = "100%",
-			size = text_size,
-			color = color,
-			align = "LV",
-		})
+			alignItems = "center",
+			padding = 8,
+			gap = 8,
+		}, function()
+			if icon then
+				view.mount("view/icon", {
+					width = 22,
+					height = "100%",
+					name = icon,
+					size = icon_size,
+					color = marker_color,
+				})
+			else
+				view.text(marker, {
+					width = 22,
+					height = "100%",
+					size = text_size,
+					color = marker_color,
+					align = "CV",
+				})
+			end
+			view.text(label, {
+				flex = 1,
+				height = "100%",
+				size = text_size,
+				color = color,
+				align = "LV",
+			})
+		end)
 	end)
 end

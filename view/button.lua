@@ -13,6 +13,7 @@ local disabled_background <const> = args.disabled_background or 0xfff3f4f6
 local text_color <const> = args.text_color or 0xff111827
 local disabled_text_color <const> = args.disabled_text_color or 0xff9ca3af
 local icon_size <const> = args.icon_size or 16
+local radius <const> = args.radius or 6
 
 local hovered = view.hovered()
 local pressed = view.pressed()
@@ -36,39 +37,52 @@ return function()
 		fill = hover_background
 	end
 
-	view.hbox({
+	view.box({
 		width = width,
 		height = height,
-		background = fill,
-		alignItems = "center",
-		justify = "center",
-		padding = args.padding or "0 12 0 12",
-		gap = args.gap or 8,
 	}, function()
-		if args.icon then
-			view.mount("view/icon", {
-				width = icon_size,
-				height = "100%",
-				name = args.icon,
-				size = icon_size,
-				color = color,
-			})
-		end
-		view.text(label, {
-			flex = 1,
+		view.mount("view/surface", {
+			position = "absolute",
+			left = 0,
+			top = 0,
+			width = "100%",
 			height = "100%",
-			size = text_size,
-			color = color,
-			align = "CV",
+			fill = fill,
+			radius = radius,
 		})
-		if args.icon_right then
-			view.mount("view/icon", {
-				width = icon_size,
+		view.hbox({
+			width = "100%",
+			height = "100%",
+			alignItems = "center",
+			justify = "center",
+			padding = args.padding or "0 12 0 12",
+			gap = args.gap or 8,
+		}, function()
+			if args.icon then
+				view.mount("view/icon", {
+					width = icon_size,
+					height = "100%",
+					name = args.icon,
+					size = icon_size,
+					color = color,
+				})
+			end
+			view.text(label, {
+				flex = 1,
 				height = "100%",
-				name = args.icon_right,
-				size = icon_size,
+				size = text_size,
 				color = color,
+				align = "CV",
 			})
-		end
+			if args.icon_right then
+				view.mount("view/icon", {
+					width = icon_size,
+					height = "100%",
+					name = args.icon_right,
+					size = icon_size,
+					color = color,
+				})
+			end
+		end)
 	end)
 end

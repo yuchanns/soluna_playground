@@ -14,6 +14,18 @@ local knob_color <const> = args.knob_color or 0xffffffff
 
 local hovered = view.hovered()
 local pressed = view.pressed()
+local checked_progress = view.animated(function()
+	return args.checked and 1 or 0
+end, {
+	duration = 0.16,
+	easing = "out_cubic",
+})
+local hover_progress = view.animated(function()
+	return (hovered() or pressed()) and 1 or 0
+end, {
+	duration = 0.1,
+	easing = "out_cubic",
+})
 
 view.clickable {
 	enabled = args.enabled,
@@ -26,33 +38,39 @@ view.clickable {
 
 return function()
 	local enabled = args.enabled ~= false
-	local checked = args.checked == true
-	local fill = checked and on_background or off_background
+	local checked = checked_progress()
+	local hover = hover_progress()
+	local off_fill = view.lerp_color(off_background, off_hover_background, hover)
+	local on_fill = view.lerp_color(on_background, on_hover_background, hover)
+	local fill = view.lerp_color(off_fill, on_fill, checked)
 
 	if not enabled then
 		fill = disabled_background
-	elseif hovered() or pressed() then
-		fill = checked and on_hover_background or off_hover_background
 	end
 
-	---@type number
-	local knob_left = 4
-	if checked then
-		knob_left = width - knob_size - 4
-	end
+	local knob_left = view.lerp(4, width - knob_size - 4, checked)
 
 	view.box({
 		width = width,
 		height = height,
-		background = fill,
 	}, function()
-		view.box {
+		view.mount("view/surface", {
+			position = "absolute",
+			left = 0,
+			top = 0,
+			width = "100%",
+			height = "100%",
+			fill = fill,
+			radius = height * 0.5,
+		})
+		view.mount("view/surface", {
 			position = "absolute",
 			left = knob_left,
 			top = 4,
 			width = knob_size,
 			height = knob_size,
-			background = knob_color,
-		}
+			fill = knob_color,
+			radius = knob_size * 0.5,
+		})
 	end)
 end
