@@ -77,7 +77,9 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field scope ViewScope
 ---@field fn fun()
 ---@field deps table[]
+---@field order integer
 ---@field queued boolean?
+---@field queue_order integer?
 ---@field stopped boolean?
 
 ---@class (partial) ViewScope
@@ -137,6 +139,7 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field pressed_button integer?
 ---@field resources table
 ---@field animations ViewAnimation[]
+---@field effect_order integer
 
 ---@class ViewContext
 ---@field view View
@@ -339,6 +342,7 @@ local Scope = {}; do
 			end
 			self.stopped = true
 			self.queued = nil
+			self.queue_order = nil
 			cleanup(self)
 		end
 	end
@@ -426,6 +430,7 @@ local Scope = {}; do
 		effect.queued = true
 		local tail = self.queue_tail + 1
 		self.queue_tail = tail
+		effect.queue_order = tail
 		self.queue[tail] = effect
 	end
 
@@ -473,13 +478,15 @@ local Scope = {}; do
 	end
 
 	---@param fn fun()
+	---@param order integer?
 	---@return ViewEffect
-	function Scope:effect(fn)
+	function Scope:effect(fn, order)
 		---@type ViewEffect
 		local effect = setmetatable({
 			scope = self,
 			fn = fn,
 			deps = {},
+			order = order or 0,
 		}, Effect)
 		self:run(effect)
 		return effect
@@ -487,13 +494,35 @@ local Scope = {}; do
 
 	function Scope:flush()
 		while self.queue_head <= self.queue_tail do
-			local head = self.queue_head
-			local effect = self.queue[head]
-			self.queue[head] = nil
-			self.queue_head = head + 1
-			if effect and not effect.stopped then
-				effect.queued = nil
-				self:run(effect)
+			---@type ViewEffect[]
+			local batch = {}
+			local count = 0
+			while self.queue_head <= self.queue_tail do
+				local head = self.queue_head
+				local effect = self.queue[head]
+				self.queue[head] = nil
+				self.queue_head = head + 1
+				if effect and not effect.stopped then
+					count = count + 1
+					batch[count] = effect
+				end
+			end
+			if count > 1 then
+				table.sort(batch, function(a, b)
+					if a.order == b.order then
+						return (a.queue_order or 0) < (b.queue_order or 0)
+					end
+					return a.order < b.order
+				end)
+			end
+			for i = 1, count do
+				local effect = batch[i]
+				---@cast effect ViewEffect
+				if effect.queued and not effect.stopped then
+					effect.queued = nil
+					effect.queue_order = nil
+					self:run(effect)
+				end
 			end
 		end
 		self.queue_head = 1
@@ -1374,6 +1403,9 @@ local View = {}; do
 		chunk = assert(load(source, "@" .. path, "t"))
 		assert(type(chunk) == "function")
 
+		local order = view.effect_order + 1
+		view.effect_order = order
+
 		---@type ViewInstance
 		local instance = setmetatable({
 			view = view,
@@ -1446,7 +1478,7 @@ local View = {}; do
 			if not ok then
 				error(err, 0)
 			end
-		end)
+		end, order)
 
 		if append then
 			append_child(view, parent, instance)
@@ -1739,9 +1771,8 @@ function M.new(args)
 		w = args.w or args.width or 0,
 		h = args.h or args.height or 0,
 		layout_version = scope:value(0),
-		pointer_x = nil,
-		pointer_y = nil,
 		animations = {},
+		effect_order = 0,
 		resources = {
 			font = {
 				loaded = font.load(),
@@ -1868,9 +1899,7 @@ end
 
 ---@return ViewRef
 function M.ref()
-	return setmetatable({
-		current = nil,
-	}, Ref)
+	return setmetatable({}, Ref)
 end
 
 ---@param chunk string
