@@ -20,12 +20,6 @@ local menu_padding <const> = args.menu_padding or 4
 
 local hovered = view.hovered()
 local pressed = view.pressed()
-local arrow_rotation = view.animated(function()
-	return args.open and pi or 0
-end, {
-	duration = 0.16,
-	easing = "out_cubic",
-})
 
 view.clickable {
 	enabled = args.enabled,
@@ -49,7 +43,7 @@ end
 
 return function()
 	local open = args.open == true
-	local rotation = arrow_rotation()
+	local rotation = open and pi or 0
 	local button_fill = background
 	if pressed() then
 		button_fill = pressed_background
@@ -99,23 +93,13 @@ return function()
 			})
 		end)
 
-		view.transition({
-			show = open,
-			position = "absolute",
-			left = 0,
-			top = row_height + menu_gap,
-			width = "100%",
-			height = menu_height,
-			duration = 0.16,
-			easing = "out_cubic",
-		}, function(state)
-			local progress = state.progress
+		if open then
 			view.box({
 				position = "absolute",
 				left = 0,
-				top = (1 - progress) * -6,
+				top = row_height + menu_gap,
 				width = "100%",
-				height = "100%",
+				height = menu_height,
 			}, function()
 				view.mount("view/surface", {
 					position = "absolute",
@@ -141,13 +125,13 @@ return function()
 							width = "100%",
 							height = row_height,
 							radius = option_radius,
-							enabled = state.show,
+							enabled = true,
 							selected = item.value == args.value,
 							on_select = args.on_change,
 						})
 					end
 				end)
 			end)
-		end)
+		end
 	end)
 end
