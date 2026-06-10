@@ -1,0 +1,4 @@
+interface:
+  display_name: "Soluna View"
+  short_description: "Reactive view runtime and component guidance"
+  default_prompt: "Use $soluna-view when modifying the Soluna Playground reactive view runtime or view components."
