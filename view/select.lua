@@ -103,9 +103,9 @@ return function()
 			show = open,
 			position = "absolute",
 			left = 0,
-			top = 0,
+			top = row_height + menu_gap,
 			width = "100%",
-			height = 0,
+			height = menu_height,
 			duration = 0.16,
 			easing = "out_cubic",
 		}, function(state)
@@ -113,9 +113,9 @@ return function()
 			view.box({
 				position = "absolute",
 				left = 0,
-				top = row_height + menu_gap + (1 - progress) * -6,
+				top = (1 - progress) * -6,
 				width = "100%",
-				height = menu_height,
+				height = "100%",
 			}, function()
 				view.mount("view/surface", {
 					position = "absolute",

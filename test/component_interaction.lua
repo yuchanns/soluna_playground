@@ -76,6 +76,8 @@ function C.frame()
 
 	click(32, 290)
 	assert_equal(events.select, "large", "third select option should receive click")
+	view:update(0.3)
+	view:pointer(8, 8)
 	view:draw(batch)
 
 	app.quit()

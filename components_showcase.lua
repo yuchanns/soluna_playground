@@ -2,9 +2,6 @@ local view = require "core.view"
 
 local args = ...
 
-local width <const> = assert(args.width)
-local height <const> = assert(args.height)
-
 local PAGE_BG <const> = 0xfff3f4f6
 local CARD_BG <const> = 0xffffffff
 local TEXT <const> = 0xff111827
@@ -108,6 +105,8 @@ local function card(title, subtitle, layout, children)
 end
 
 return function()
+	local width = assert(args.width)
+	local height = assert(args.height)
 	local active_nav = selected_nav()
 	local size_value = selected_size()
 	local open = select_open()

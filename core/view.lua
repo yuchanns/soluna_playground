@@ -645,11 +645,20 @@ local View = {}; do
 
 		function Instance:destroy()
 			if not self.mounted then return end
+			local view = self.view
+			if view.hovered_instance == self then
+				view.hovered_instance = nil
+			end
+			if view.pressed_instance == self then
+				view.pressed_instance = nil
+				view.pressed_button = nil
+			end
 			self.mounted = nil
 			if self.ref and self.ref.current == self then
 				self.ref.current = nil
 			end
 			self.ref = nil
+			self.render_node = nil
 			for i = #self.children, 1, -1 do
 				self.children[i]:destroy()
 				self.children[i] = nil
@@ -904,7 +913,9 @@ local View = {}; do
 		end
 		if old then
 			set_state(old.hovered, false)
-			call_clickable(old, "on_pointer_leave", pointer_event_at(old, x or 0, y or 0))
+			if old.mounted then
+				call_clickable(old, "on_pointer_leave", pointer_event_at(old, x or 0, y or 0))
+			end
 		end
 		view.hovered_instance = target
 		if target then
@@ -1679,6 +1690,9 @@ local View = {}; do
 		self.pressed_instance = nil
 		self.pressed_button = nil
 		if not pressed then
+			return
+		end
+		if not pressed.mounted then
 			return
 		end
 		set_state(pressed.pressed, false)
