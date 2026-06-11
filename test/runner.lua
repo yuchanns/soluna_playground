@@ -3,6 +3,12 @@ local file = require "soluna.file"
 
 local M = {}
 
+local DEFAULT_KIND <const> = "smoke"
+local TEST_KINDS <const> = {
+	"smoke",
+	"feature",
+}
+
 local function selected_name()
 	local value = os.getenv and os.getenv "TEST_NAME"
 	if value == "" then
@@ -26,6 +32,27 @@ end
 
 local function load_case(kind, name)
 	return require("test." .. kind .. ".test_" .. name)
+end
+
+local function resolve_kind(name)
+	---@type string?
+	local selected
+	for i = 1, #TEST_KINDS do
+		local kind = TEST_KINDS[i]
+		local names = collect(kind)
+		for j = 1, #names do
+			if names[j] == name then
+				if selected then
+					error("test " .. name .. " is ambiguous; set TEST_KIND", 2)
+				end
+				selected = kind
+			end
+		end
+	end
+	if not selected then
+		error("test " .. name .. " not found", 2)
+	end
+	return selected
 end
 
 local function run_cases(kind, args, names)
@@ -55,6 +82,8 @@ end
 function M.run(kind, args)
 	local selected = selected_name()
 	if selected then
+		kind = kind ~= "" and kind or nil
+		kind = kind or resolve_kind(selected)
 		local case = load_case(kind, selected)
 		if case.app then
 			return case.app(args)
@@ -64,6 +93,7 @@ function M.run(kind, args)
 			selected,
 		})
 	end
+	kind = kind ~= "" and kind or DEFAULT_KIND
 	return run_cases(kind, args, collect(kind))
 end
 

@@ -19,7 +19,9 @@ return function(args)
 	local HUD_H <const> = 24
 	local PAGE_PADDING <const> = 32
 	local CONTENT_WIDTH <const> = 1136
+	local CONTENT_HEIGHT <const> = 654
 	local MUTED <const> = 0xff6b7280
+	---@type { w: number, h: number }
 	local screen = {
 		w = args.width,
 		h = args.height,
@@ -59,8 +61,11 @@ return function(args)
 			stats_label = stats_text("View renders: " .. tostring(render_count), HUD_W, HUD_H)
 		end
 		local content_width = math.min(math.max(screen.w - PAGE_PADDING * 2, 0), CONTENT_WIDTH)
-		local x = PAGE_PADDING + content_width - HUD_W
-		batch:add(stats_label, math.max(x, 0), PAGE_PADDING + 7)
+		local content_x = (screen.w - content_width) * 0.5
+		local content_height = math.min(math.max(screen.h - PAGE_PADDING * 2, 0), CONTENT_HEIGHT)
+		local content_y = (screen.h - content_height) * 0.5
+		local x = content_x + content_width - HUD_W
+		batch:add(stats_label, math.max(x, 0), content_y + 7)
 	end
 
 	function C.frame()

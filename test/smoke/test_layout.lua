@@ -85,9 +85,37 @@ local function test_parent_size()
 	assert_equal(inner.h, container.h, "inner host should fill container height")
 end
 
+local function test_direct_destroy_detaches_layout()
+	local view = view_module.new {
+		width = 200,
+		height = 140,
+	}
+	local refs = {
+		component = view_module.ref(),
+		header = view_module.ref(),
+		body = view_module.ref(),
+	}
+	view:mount("test/smoke/layout_intrinsic_root", {
+		width = 200,
+		height = 140,
+		show = true,
+		refs = refs,
+	})
+
+	view:update(0)
+	assert_equal(assert_rect(refs.body, "body").y, 74, "body should start below mounted component")
+
+	assert(refs.component.current, "missing component instance"):destroy()
+	view:update(0)
+	assert_equal(refs.component:rect(), nil, "destroyed component ref should be cleared")
+	assert_equal(refs.header:rect(), nil, "destroyed host ref should be cleared")
+	assert_equal(assert_rect(refs.body, "body").y, 0, "body should move up after direct component destroy")
+end
+
 function M.run()
 	test_intrinsic_component()
 	test_parent_size()
+	test_direct_destroy_detaches_layout()
 end
 
 return M

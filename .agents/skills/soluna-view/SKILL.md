@@ -158,12 +158,17 @@ Prefer animation that can be expressed as transform, opacity, color, or material
 Run focused checks after changes:
 
 ```sh
-timeout --kill-after=1s 10s ./soluna/bin/linux/release/soluna test_component_interaction.dl
-timeout --kill-after=1s 10s ./soluna/bin/linux/release/soluna test_showcase_interaction.dl
-timeout --kill-after=1s 10s ./soluna/bin/linux/release/soluna test_animation.dl
-timeout --kill-after=1s 10s ./soluna/bin/linux/release/soluna test_view_performance_smoke.dl
+timeout --kill-after=1s 10s ./soluna/bin/linux/release/soluna test.dl
+TEST_NAME=component_interaction timeout --kill-after=1s 10s ./soluna/bin/linux/release/soluna test.dl
+TEST_NAME=animation timeout --kill-after=1s 10s ./soluna/bin/linux/release/soluna test.dl
+TEST_KIND=feature TEST_NAME=showcase_interaction timeout --kill-after=1s 10s ./soluna/bin/linux/release/soluna test.dl
 ```
 
-Run `test_components.dl` and `test_view_performance.dl` manually when checking the visual showcase or live performance HUD.
+Run these manually when checking the visual showcase or live performance HUD:
+
+```sh
+TEST_NAME=components ./soluna/bin/linux/release/soluna test.dl
+TEST_NAME=performance ./soluna/bin/linux/release/soluna test.dl
+```
 
 Use the repository `emmylua-nvim-headless` skill for diagnostics and formatting. Run diagnostics for changed non-test Lua files, and for test files when the change adds typed helpers or benchmark infrastructure.

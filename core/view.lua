@@ -107,16 +107,21 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field animation ViewAnimation
 ---@field effect ViewEffect?
 
+---@type fun(node: ViewRenderNode)
+local dispose_render_instances
+---@type fun(instance: ViewInstance): ViewInstance
+local root_instance
+---@type fun(instance: ViewInstance): ViewCommand[]
+local compile_render_tree
+
 ---@class (partial) ViewInstance
 ---@field view View
 ---@field parent ViewInstance?
----@field children ViewInstance[]
 ---@field layout ViewLayout
 ---@field disposables ViewDisposable[]?
 ---@field mounted boolean?
 ---@field effect ViewEffect?
 ---@field commands ViewCommand[]?
----@field render_root ViewRenderNode?
 ---@field render_node ViewRenderNode?
 ---@field layout_version ViewValue<integer>
 ---@field props table
@@ -146,7 +151,6 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field view View
 ---@field instance ViewInstance?
 ---@field disposables ViewDisposable[]?
----@field mounting boolean?
 ---@field drawing boolean?
 ---@field rendering boolean?
 
@@ -601,85 +605,15 @@ end
 local View = {}; do
 	View.__index = View
 
-	---@param instance ViewInstance
-	---@param key "w"|"h"
-	---@param track boolean?
-	---@return number
-	local function instance_layout_axis(instance, key, track)
-		local value = instance.layout[key]
-		if value ~= nil then
-			return value
-		end
-		local parent = instance.parent
-		if parent then
-			if track then
-				parent.layout_version()
-			end
-			return instance_layout_axis(parent, key, track)
-		end
-		if track then
-			instance.view.layout_version()
-		end
-		if key == "w" then
-			return instance.view.w
-		end
-		return instance.view.h
-	end
-
-	---@param instance ViewInstance
-	---@param track boolean?
-	---@return number, number
-	local function instance_size(instance, track)
-		return instance_layout_axis(instance, "w", track), instance_layout_axis(instance, "h", track)
-	end
-
 	---@class (partial) ViewInstance
 	local Instance = {}; do
 		Instance.__index = Instance
 
 		---@return number, number
-		function Instance:container_size()
-			local parent = self.parent
-			if parent then
-				return instance_size(parent)
-			end
-			return self.view.w, self.view.h
-		end
-
-		---@return number, number
 		function Instance:origin()
-			local layout = self.layout
-			local x = layout.x
-			local y = layout.y
-			local w = layout.w
-			local h = layout.h
-			local parent_w, parent_h = self:container_size()
-
-			if x == nil and w ~= nil then
-				x = (parent_w - w) / 2
-			end
-			if y == nil and h ~= nil then
-				y = (parent_h - h) / 2
-			end
-
-			return x or 0, y or 0
-		end
-
-		---@param x number
-		---@param y number
-		---@return number, number
-		function Instance:local_point(x, y)
-			local ox, oy = self:origin()
-			return x - ox, y - oy
-		end
-
-		---@param x number
-		---@param y number
-		---@return boolean
-		function Instance:contains(x, y)
-			local w, h = instance_size(self)
-			local lx, ly = self:local_point(x, y)
-			return lx >= 0 and lx <= w and ly >= 0 and ly <= h
+			local node = assert(self.render_node)
+			local x, y = yoga.node_get(node.node)
+			return x, y
 		end
 
 		---@param batch ViewBatch
@@ -702,9 +636,16 @@ local View = {}; do
 			end
 		end
 
-		function Instance:destroy()
-			if not self.mounted then return end
+		---@param disposing_render_tree boolean?
+		function Instance:destroy(disposing_render_tree)
+			if not self.mounted then
+				return
+			end
 			local view = self.view
+			local render_node = self.render_node
+			local from_render_tree = disposing_render_tree == true
+			local root = not from_render_tree and self.parent and root_instance(self) or nil
+			self.render_node = nil
 			if view.hovered_instance == self then
 				view.hovered_instance = nil
 			end
@@ -717,11 +658,6 @@ local View = {}; do
 				self.ref.current = nil
 			end
 			self.ref = nil
-			self.render_node = nil
-			for i = #self.children, 1, -1 do
-				self.children[i]:destroy()
-				self.children[i] = nil
-			end
 			if self.effect then
 				self.effect:stop()
 				self.effect = nil
@@ -733,9 +669,29 @@ local View = {}; do
 				end
 				self.disposables = nil
 			end
-			if self.render_root then
-				yoga.node_free(self.render_root.node)
-				self.render_root = nil
+			if render_node and not from_render_tree then
+				render_node.instance = nil
+				dispose_render_instances(render_node)
+				if render_node.parent then
+					for i = #render_node.parent.children, 1, -1 do
+						if render_node.parent.children[i] == render_node then
+							table.remove(render_node.parent.children, i)
+							break
+						end
+					end
+					yoga.node_remove(render_node.parent.node, render_node.node)
+				else
+					for i = #view.instances, 1, -1 do
+						if view.instances[i] == self then
+							table.remove(view.instances, i)
+							break
+						end
+					end
+				end
+				yoga.node_free(render_node.node)
+			end
+			if root and root.mounted then
+				root.commands = compile_render_tree(root)
 			end
 			self.commands = nil
 		end
@@ -755,23 +711,10 @@ local View = {}; do
 		end
 	end
 
-	---@param view View
-	---@param parent ViewInstance?
-	---@param instance ViewInstance
-	local function append_child(view, parent, instance)
-		if parent then
-			parent.children[#parent.children + 1] = instance
-		else
-			view.instances[#view.instances + 1] = instance
-		end
-	end
-
 	---@type fun(instance: ViewInstance, x: number, y: number): ViewInstance?, number?, number?
 	local hit_instance
 	---@type fun(node: ViewRenderNode, x: number, y: number): ViewInstance?, number?, number?
 	local hit_render_node
-	---@type fun(node: ViewRenderNode): number, number
-	local render_node_origin
 
 	---@param value ViewValue<boolean>?
 	---@param state boolean
@@ -823,50 +766,12 @@ local View = {}; do
 	end
 
 	---@param instance ViewInstance
-	---@return number, number
-	local function instance_origin(instance)
-		local render_node = instance.render_node
-		if render_node then
-			local x, y = yoga.node_get(render_node.node)
-			local ox, oy = render_node_origin(render_node)
-			return ox + x, oy + y
-		end
-		local x, y = instance:origin()
-		local parent = instance.parent
-		if parent then
-			local px, py = instance_origin(parent)
-			return px + x, py + y
-		end
-		return x, y
-	end
-
-	---@param node ViewRenderNode
-	---@return ViewRenderNode
-	local function render_tree_root(node)
-		while node.parent do
-			node = node.parent
-		end
-		return node
-	end
-
-	---@param node ViewRenderNode
-	---@return number, number
-	render_node_origin = function(node)
-		local root = render_tree_root(node)
-		local owner = root.owner
-		if owner then
-			return instance_origin(owner)
-		end
-		return 0, 0
-	end
-
-	---@param instance ViewInstance
 	---@param x number
 	---@param y number
 	---@param button integer?
 	---@return ViewPointerEvent
 	local function pointer_event_at(instance, x, y, button)
-		local ox, oy = instance_origin(instance)
+		local ox, oy = instance:origin()
 		return pointer_event(instance, x - ox, y - oy, button)
 	end
 
@@ -877,9 +782,6 @@ local View = {}; do
 		if target.node then
 			---@cast target ViewRenderNode
 			local x, y, w, h = yoga.node_get(target.node)
-			local ox, oy = render_node_origin(target)
-			x = x + ox
-			y = y + oy
 			return {
 				x = x,
 				y = y,
@@ -888,29 +790,14 @@ local View = {}; do
 			}
 		end
 		---@cast target ViewInstance
-		local x, y = instance_origin(target)
-		local w, h = instance_size(target)
+		local node = assert(target.render_node)
+		local x, y, w, h = yoga.node_get(node.node)
 		return {
 			x = x,
 			y = y,
 			w = w,
 			h = h,
 		}
-	end
-
-	---@param batch ViewBatch
-	---@param instance ViewInstance
-	local function draw_node(batch, instance)
-		if not instance.mounted then
-			return
-		end
-		local x, y = instance:origin()
-		batch:layer(x, y)
-		instance:draw(batch)
-		for i = 1, #instance.children do
-			draw_node(batch, instance.children[i])
-		end
-		batch:layer()
 	end
 
 	---@param instance ViewInstance
@@ -921,22 +808,11 @@ local View = {}; do
 		if not instance.mounted then
 			return nil, nil, nil
 		end
-		local inside = instance:contains(x, y)
-		local lx, ly = instance:local_point(x, y)
-		for i = #instance.children, 1, -1 do
-			local target, tx, ty = hit_instance(instance.children[i], lx, ly)
+		if instance.render_node then
+			local target, tx, ty = hit_render_node(instance.render_node, x, y)
 			if target then
 				return target, tx, ty
 			end
-		end
-		if instance.render_root then
-			local target, tx, ty = hit_render_node(instance.render_root, lx, ly)
-			if target then
-				return target, tx, ty
-			end
-		end
-		if inside and clickable_enabled(instance) then
-			return instance, lx, ly
 		end
 		return nil, nil, nil
 	end
@@ -958,12 +834,6 @@ local View = {}; do
 			local lx = x - cx
 			local ly = y - cy
 			local instance = node.instance
-			for i = #instance.children, 1, -1 do
-				local target, tx, ty = hit_instance(instance.children[i], lx, ly)
-				if target then
-					return target, tx, ty
-				end
-			end
 			if lx >= 0 and lx <= cw and ly >= 0 and ly <= ch and clickable_enabled(instance) then
 				return instance, lx, ly
 			end
@@ -1053,14 +923,19 @@ local View = {}; do
 	end
 
 	---@param node ViewRenderNode
-	local function dispose_render_instances(node)
+	function dispose_render_instances(node)
 		bind_ref(node, nil, node)
 		if node.transition then
 			node.transition.animation:stop()
 			node.transition = nil
 		end
 		if node.instance then
-			node.instance:destroy()
+			local instance = node.instance
+			node.instance = nil
+			if instance.render_node == node then
+				instance.render_node = nil
+			end
+			instance:destroy(true)
 		end
 		for i = 1, #node.children do
 			dispose_render_instances(node.children[i])
@@ -1086,25 +961,6 @@ local View = {}; do
 		for i = #parent.children, index, -1 do
 			remove_render_child(parent, i)
 		end
-	end
-
-	---@param instance ViewInstance
-	---@return ViewRenderNode
-	local function render_root(instance)
-		local root = instance.render_root
-		if root then
-			return root
-		end
-		root = {
-			kind = "root",
-			key = nil,
-			node = yoga.node_new(),
-			owner = instance,
-			children = {},
-			cursor = 1,
-		}
-		instance.render_root = root
-		return root
 	end
 
 	local mount_component
@@ -1355,36 +1211,27 @@ local View = {}; do
 		for i = 1, #node.children do
 			compile_render_node(node.children[i], out, x, y)
 		end
-		if component_instance then
-			for i = 1, #component_instance.children do
-				local child = component_instance.children[i]
-				out[#out + 1] = {
-					name = "component_child",
-					args = {},
-					draw = function(batch)
-						draw_node(batch, child)
-					end,
-				}
-			end
-		end
 		out[#out + 1] = command "layer"
 	end
 
 	---@param instance ViewInstance
 	---@return ViewCommand[]
-	local function compile_render_tree(instance)
-		local root = render_root(instance)
-		local w, h = instance_size(instance, true)
-		yoga.node_set(root.node, {
-			width = w,
-			height = h,
-		})
+	function compile_render_tree(instance)
+		local root = assert(instance.render_node)
+		if not root.parent then
+			local style = layout_style(root.props)
+			if style.width == nil then
+				style.width = instance.view.w
+			end
+			if style.height == nil then
+				style.height = instance.view.h
+			end
+			yoga.node_set(root.node, style)
+		end
 		yoga.node_calc(root.node)
 
 		local out = {}
-		for i = 1, #root.children do
-			compile_render_node(root.children[i], out, 0, 0)
-		end
+		compile_render_node(root, out, 0, 0)
 		return out
 	end
 
@@ -1446,7 +1293,7 @@ local View = {}; do
 
 	---@param instance ViewInstance
 	---@return ViewInstance
-	local function root_instance(instance)
+	function root_instance(instance)
 		while instance.parent do
 			instance = instance.parent
 		end
@@ -1457,10 +1304,9 @@ local View = {}; do
 	---@param chunk string
 	---@param props table?
 	---@param parent ViewInstance?
-	---@param append boolean
-	---@param render_node ViewRenderNode?
+	---@param render_node ViewRenderNode
 	---@return ViewInstance
-	function mount_component(view, chunk, props, parent, append, render_node)
+	function mount_component(view, chunk, props, parent, render_node)
 		local path = assert(file.searchpath(chunk, view.resources.component_path))
 		local source = assert(file.load(path))
 		---@diagnostic disable-next-line: assign-type-mismatch
@@ -1482,12 +1328,11 @@ local View = {}; do
 			props = {},
 			render_node = render_node,
 		}, Instance)
+		render_node.instance = instance
 		local args = component_args(instance)
 		instance.args = args
 		patch_props(instance, props)
-		if append then
-			bind_ref(instance, props and props.ref, instance)
-		end
+		bind_ref(instance, props and props.ref, instance)
 
 		local prev = active
 		---@type ViewContext
@@ -1495,7 +1340,6 @@ local View = {}; do
 			view = view,
 			instance = instance,
 			disposables = instance.disposables,
-			mounting = true,
 		}
 		local result = table.pack(pcall(chunk, args))
 		---@cast result table<integer, any>
@@ -1526,10 +1370,11 @@ local View = {}; do
 				drawing = true,
 				rendering = true,
 			}
+			local parent_node = assert(instance.render_node)
 			local render_ctx = {
 				view = view,
 				instance = instance,
-				parent = instance.render_node or render_root(instance),
+				parent = parent_node,
 			}
 			active = ctx
 			active_render = render_ctx
@@ -1538,13 +1383,9 @@ local View = {}; do
 				render_ctx.parent.cursor = 1
 				draw()
 				remove_render_children_from(render_ctx.parent, render_ctx.parent.cursor)
-				if instance.render_node then
-					if not nested_render then
-						local root = root_instance(instance)
-						root.commands = compile_render_tree(root)
-					end
-				else
-					instance.commands = compile_render_tree(instance)
+				if not nested_render then
+					local root = root_instance(instance)
+					root.commands = compile_render_tree(root)
 				end
 			end)
 			active = prev
@@ -1554,18 +1395,28 @@ local View = {}; do
 			end
 		end, order)
 
-		if append then
-			append_child(view, parent, instance)
-		end
 		return instance
 	end
 
 	---@param chunk string
 	---@param props table?
-	---@param parent ViewInstance?
 	---@return ViewInstance
-	function View:mount(chunk, props, parent)
-		return mount_component(self, chunk, props, parent, true)
+	function View:mount(chunk, props)
+		local node = {
+			kind = "component",
+			key = nil,
+			chunk = chunk,
+			node = yoga.node_new(),
+			parent = nil,
+			owner = nil,
+			children = {},
+			cursor = 1,
+			props = props,
+		}
+		yoga.node_set(node.node, layout_style(props))
+		local instance = mount_component(self, chunk, props, nil, node)
+		self.instances[#self.instances + 1] = instance
+		return instance
 	end
 
 	---@param props table?
@@ -1632,7 +1483,7 @@ local View = {}; do
 				cursor = 1,
 			}
 			parent.children[index] = node
-			node.instance = mount_component(self, chunk, props, ctx.instance, false, node)
+			mount_component(self, chunk, props, ctx.instance, node)
 		else
 			patch_props(assert(node.instance), props)
 		end
@@ -1811,7 +1662,7 @@ local View = {}; do
 	---@param batch ViewBatch
 	function View:draw(batch)
 		for i = 1, #self.instances do
-			draw_node(batch, self.instances[i])
+			self.instances[i]:draw(batch)
 		end
 	end
 
@@ -1988,15 +1839,8 @@ end
 ---@param props table?
 ---@return ViewInstance
 function M.mount(chunk, props)
-	if active_render and not (active and active.mounting) then
-		return active_render.view:render_component(chunk, props, props and props.key)
-	end
-	local current = assert(active)
-	if current.drawing then
-		error("mount cannot be called while drawing", 2)
-	end
-	assert(current.mounting and current.instance, "mount can only be called before the component is mounted")
-	return current.view:mount(chunk, props, current.instance)
+	local ctx = assert(active_render, "mount can only be called while rendering")
+	return ctx.view:render_component(chunk, props, props and props.key)
 end
 
 ---@param props table?
