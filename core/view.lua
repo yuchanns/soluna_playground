@@ -69,6 +69,8 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field w number?
 ---@field h number?
 
+---@alias ViewHitMode "clickable"|"component"
+
 ---@class ViewBatch
 ---@field layer fun(self: ViewBatch, ...: number)
 ---@field add fun(self: ViewBatch, ...: any)
@@ -127,6 +129,7 @@ local compile_render_tree
 ---@field props table
 ---@field args table
 ---@field clickable ViewClickable?
+---@field dismissable ViewDismissable?
 ---@field hovered ViewValue<boolean>?
 ---@field pressed ViewValue<boolean>?
 ---@field ref ViewRef?
@@ -160,10 +163,15 @@ local compile_render_tree
 ---@field parent ViewRenderNode
 
 ---@class ViewPointerEvent
----@field target ViewInstance
+---@field target ViewInstance?
+---@field current_target ViewInstance
 ---@field x number
 ---@field y number
 ---@field button integer?
+
+---@class ViewDismissable
+---@field enabled? any
+---@field on_dismiss? fun(event: ViewPointerEvent)
 
 ---@class ViewClickable
 ---@field enabled? any
@@ -199,6 +207,7 @@ local compile_render_tree
 ---@field canvas fun(props?: table, draw?: fun(width: number, height: number)): ViewRenderNode
 ---@field text fun(text: any, props?: table): ViewRenderNode
 ---@field clickable fun(props?: ViewClickable)
+---@field dismissable fun(props?: ViewDismissable)
 ---@field hovered fun(): ViewValue<boolean>
 ---@field pressed fun(): ViewValue<boolean>
 ---@field ref fun(): ViewRef
@@ -711,9 +720,9 @@ local View = {}; do
 		end
 	end
 
-	---@type fun(instance: ViewInstance, x: number, y: number): ViewInstance?, number?, number?
+	---@type fun(instance: ViewInstance, x: number, y: number, mode: ViewHitMode): ViewInstance?, number?, number?
 	local hit_instance
-	---@type fun(node: ViewRenderNode, x: number, y: number): ViewInstance?, number?, number?
+	---@type fun(node: ViewRenderNode, x: number, y: number, mode: ViewHitMode): ViewInstance?, number?, number?
 	local hit_render_node
 
 	---@param value ViewValue<boolean>?
@@ -736,13 +745,22 @@ local View = {}; do
 	end
 
 	---@param instance ViewInstance
+	---@param mode ViewHitMode
+	---@return boolean
+	local function instance_hittable(instance, mode)
+		return mode == "component" or clickable_enabled(instance)
+	end
+
+	---@param target ViewInstance?
+	---@param current_target ViewInstance
 	---@param x number
 	---@param y number
 	---@param button integer?
 	---@return ViewPointerEvent
-	local function pointer_event(instance, x, y, button)
+	local function pointer_event(target, current_target, x, y, button)
 		return {
-			target = instance,
+			target = target,
+			current_target = current_target,
 			x = x,
 			y = y,
 			button = button,
@@ -765,14 +783,82 @@ local View = {}; do
 		end
 	end
 
-	---@param instance ViewInstance
+	---@param target ViewInstance?
+	---@param current_target ViewInstance
 	---@param x number
 	---@param y number
 	---@param button integer?
 	---@return ViewPointerEvent
-	local function pointer_event_at(instance, x, y, button)
-		local ox, oy = instance:origin()
-		return pointer_event(instance, x - ox, y - oy, button)
+	local function pointer_event_at(target, current_target, x, y, button)
+		local ox, oy = current_target:origin()
+		return pointer_event(target, current_target, x - ox, y - oy, button)
+	end
+
+	---@param instance ViewInstance
+	---@return boolean
+	local function dismissable_enabled(instance)
+		local dismissable = instance.dismissable
+		if not dismissable then
+			return false
+		end
+		local enabled = dismissable.enabled
+		return enabled == nil or enabled ~= false
+	end
+
+	---@param target ViewInstance?
+	---@param boundary ViewInstance
+	---@return boolean
+	local function target_inside(target, boundary)
+		while target do
+			if target == boundary then
+				return true
+			end
+			target = target.parent
+		end
+		return false
+	end
+
+	---@param instance ViewInstance
+	---@param target ViewInstance?
+	---@param x number
+	---@param y number
+	---@param button integer?
+	local function call_dismissable(instance, target, x, y, button)
+		local dismissable = instance.dismissable
+		if not dismissable then
+			return
+		end
+		local callback = dismissable.on_dismiss
+		if callback then
+			callback(pointer_event_at(target, instance, x, y, button))
+		end
+	end
+
+	---@type fun(node: ViewRenderNode, target: ViewInstance?, x: number, y: number, button: integer?)
+	local notify_dismissable_node
+
+	---@param view View
+	---@param target ViewInstance?
+	---@param x number
+	---@param y number
+	---@param button integer?
+	local function notify_dismissable(view, target, x, y, button)
+		for i = #view.instances, 1, -1 do
+			local node = view.instances[i].render_node
+			if node then
+				notify_dismissable_node(node, target, x, y, button)
+			end
+		end
+	end
+
+	notify_dismissable_node = function(node, target, x, y, button)
+		for i = #node.children, 1, -1 do
+			notify_dismissable_node(node.children[i], target, x, y, button)
+		end
+		local instance = node.instance
+		if instance and instance.mounted and dismissable_enabled(instance) and not target_inside(target, instance) then
+			call_dismissable(instance, target, x, y, button)
+		end
 	end
 
 	rect_of = function(target)
@@ -803,13 +889,14 @@ local View = {}; do
 	---@param instance ViewInstance
 	---@param x number
 	---@param y number
+	---@param mode ViewHitMode
 	---@return ViewInstance?, number?, number?
-	hit_instance = function(instance, x, y)
+	hit_instance = function(instance, x, y, mode)
 		if not instance.mounted then
 			return nil, nil, nil
 		end
 		if instance.render_node then
-			local target, tx, ty = hit_render_node(instance.render_node, x, y)
+			local target, tx, ty = hit_render_node(instance.render_node, x, y, mode)
 			if target then
 				return target, tx, ty
 			end
@@ -820,11 +907,12 @@ local View = {}; do
 	---@param node ViewRenderNode
 	---@param x number
 	---@param y number
+	---@param mode ViewHitMode
 	---@return ViewInstance?, number?, number?
-	hit_render_node = function(node, x, y)
+	hit_render_node = function(node, x, y, mode)
 		for i = #node.children, 1, -1 do
 			local child = node.children[i]
-			local target, tx, ty = hit_render_node(child, x, y)
+			local target, tx, ty = hit_render_node(child, x, y, mode)
 			if target then
 				return target, tx, ty
 			end
@@ -834,7 +922,7 @@ local View = {}; do
 			local lx = x - cx
 			local ly = y - cy
 			local instance = node.instance
-			if lx >= 0 and lx <= cw and ly >= 0 and ly <= ch and clickable_enabled(instance) then
+			if lx >= 0 and lx <= cw and ly >= 0 and ly <= ch and instance_hittable(instance, mode) then
 				return instance, lx, ly
 			end
 		end
@@ -844,15 +932,32 @@ local View = {}; do
 	---@param view View
 	---@param x number
 	---@param y number
+	---@param mode ViewHitMode
 	---@return ViewInstance?, number?, number?
-	local function hit_view(view, x, y)
+	local function hit_view(view, x, y, mode)
 		for i = #view.instances, 1, -1 do
-			local target, tx, ty = hit_instance(view.instances[i], x, y)
+			local target, tx, ty = hit_instance(view.instances[i], x, y, mode)
 			if target then
 				return target, tx, ty
 			end
 		end
 		return nil, nil, nil
+	end
+
+	---@param view View
+	---@param x number
+	---@param y number
+	---@return ViewInstance?, number?, number?
+	local function hit_clickable_view(view, x, y)
+		return hit_view(view, x, y, "clickable")
+	end
+
+	---@param view View
+	---@param x number
+	---@param y number
+	---@return ViewInstance?, number?, number?
+	local function hit_component_view(view, x, y)
+		return hit_view(view, x, y, "component")
 	end
 
 	---@param view View
@@ -867,13 +972,13 @@ local View = {}; do
 		if old then
 			set_state(old.hovered, false)
 			if old.mounted then
-				call_clickable(old, "on_pointer_leave", pointer_event_at(old, x or 0, y or 0))
+				call_clickable(old, "on_pointer_leave", pointer_event_at(old, old, x or 0, y or 0))
 			end
 		end
 		view.hovered_instance = target
 		if target then
 			set_state(target.hovered, true)
-			call_clickable(target, "on_pointer_enter", pointer_event_at(target, x or 0, y or 0))
+			call_clickable(target, "on_pointer_enter", pointer_event_at(target, target, x or 0, y or 0))
 		end
 	end
 
@@ -1596,10 +1701,10 @@ local View = {}; do
 	function View:pointer(x, y)
 		self.pointer_x = x
 		self.pointer_y = y
-		local target, tx, ty = hit_view(self, x, y)
+		local target, tx, ty = hit_clickable_view(self, x, y)
 		set_hovered(self, target, x, y)
 		if target then
-			call_clickable(target, "on_pointer_move", pointer_event(target, tx or 0, ty or 0))
+			call_clickable(target, "on_pointer_move", pointer_event(target, target, tx or 0, ty or 0))
 		end
 	end
 
@@ -1612,9 +1717,11 @@ local View = {}; do
 		if x == nil or y == nil then
 			return
 		end
-		local target, tx, ty = hit_view(self, x, y)
+		local event_target = hit_component_view(self, x, y)
+		local target, tx, ty = hit_clickable_view(self, x, y)
+		notify_dismissable(self, event_target, x, y)
 		if target then
-			call_clickable(target, "on_click", pointer_event(target, tx or 0, ty or 0))
+			call_clickable(target, "on_click", pointer_event(event_target, target, tx or 0, ty or 0))
 		end
 		return target
 	end
@@ -1627,8 +1734,10 @@ local View = {}; do
 		if x == nil or y == nil then
 			return
 		end
-		local target, tx, ty = hit_view(self, x, y)
+		local event_target = hit_component_view(self, x, y)
+		local target, tx, ty = hit_clickable_view(self, x, y)
 		if state == 1 then
+			notify_dismissable(self, event_target, x, y, button)
 			local old = self.pressed_instance
 			if old and old ~= target then
 				set_state(old.pressed, false)
@@ -1637,7 +1746,7 @@ local View = {}; do
 			self.pressed_button = target and button or nil
 			if target then
 				set_state(target.pressed, true)
-				call_clickable(target, "on_pointer_down", pointer_event(target, tx or 0, ty or 0, button))
+				call_clickable(target, "on_pointer_down", pointer_event(event_target, target, tx or 0, ty or 0, button))
 			end
 			return
 		end
@@ -1653,9 +1762,9 @@ local View = {}; do
 			return
 		end
 		set_state(pressed.pressed, false)
-		call_clickable(pressed, "on_pointer_up", pointer_event_at(pressed, x, y, button))
+		call_clickable(pressed, "on_pointer_up", pointer_event_at(pressed, pressed, x, y, button))
 		if pressed == target and pressed_button == button and clickable_enabled(pressed) then
-			call_clickable(pressed, "on_click", pointer_event(pressed, tx or 0, ty or 0, button))
+			call_clickable(pressed, "on_click", pointer_event(event_target, pressed, tx or 0, ty or 0, button))
 		end
 	end
 
@@ -1802,6 +1911,13 @@ function M.clickable(props)
 	---@cast active ViewContext
 	local instance = assert(active.instance)
 	instance.clickable = props or {}
+end
+
+---@param props ViewDismissable?
+function M.dismissable(props)
+	---@cast active ViewContext
+	local instance = assert(active.instance)
+	instance.dismissable = props or {}
 end
 
 ---@return ViewValue<boolean>

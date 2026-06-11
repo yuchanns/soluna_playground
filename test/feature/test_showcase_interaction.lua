@@ -10,6 +10,10 @@ local CONTENT_HEIGHT <const> = 654
 local SELECT_CLICK_X <const> = 38
 local SELECT_OPEN_Y <const> = 525
 local SELECT_LARGE_Y <const> = 643
+local BUTTON_CLICK_X <const> = 38
+local BUTTON_CLICK_Y <const> = 231
+local PAGE_EMPTY_X <const> = 10
+local PAGE_EMPTY_Y <const> = 10
 local COMPACT_WIDTH <const> = 920
 
 local function frame(view, batch, dt)
@@ -41,7 +45,7 @@ local function assert_select_large_clickable(args, width)
 		h = args.height,
 	}
 	local batch <const> = args.batch
-	view:mount("components_showcase", {
+	view:mount("test/feature/components_showcase", {
 		width = width,
 		height = args.height,
 	})
@@ -59,6 +63,58 @@ end
 
 ---@param args table
 ---@param width number
+local function assert_select_closes_after_other_card_click(args, width)
+	local view = view_module.new {
+		w = width,
+		h = args.height,
+	}
+	local batch <const> = args.batch
+	view:mount("test/feature/components_showcase", {
+		width = width,
+		height = args.height,
+	})
+
+	frame(view, batch, FRAME_DT)
+
+	local content_x, content_y = content_origin(width, args.height)
+	click(view, batch, content_x + SELECT_CLICK_X, content_y + SELECT_OPEN_Y)
+	frame(view, batch, 0.2)
+
+	click(view, batch, content_x + BUTTON_CLICK_X, content_y + BUTTON_CLICK_Y)
+	local target = view:click(content_x + SELECT_CLICK_X, content_y + SELECT_LARGE_Y)
+	assert(not (target and target.args and target.args.value == "large"),
+		"select menu should close after another card click")
+	frame(view, batch, FRAME_DT)
+end
+
+---@param args table
+---@param width number
+local function assert_select_closes_after_empty_page_click(args, width)
+	local view = view_module.new {
+		w = width,
+		h = args.height,
+	}
+	local batch <const> = args.batch
+	view:mount("test/feature/components_showcase", {
+		width = width,
+		height = args.height,
+	})
+
+	frame(view, batch, FRAME_DT)
+
+	local content_x, content_y = content_origin(width, args.height)
+	click(view, batch, content_x + SELECT_CLICK_X, content_y + SELECT_OPEN_Y)
+	frame(view, batch, 0.2)
+
+	click(view, batch, PAGE_EMPTY_X, PAGE_EMPTY_Y)
+	local target = view:click(content_x + SELECT_CLICK_X, content_y + SELECT_LARGE_Y)
+	assert(not (target and target.args and target.args.value == "large"),
+		"select menu should close after empty page click")
+	frame(view, batch, FRAME_DT)
+end
+
+---@param args table
+---@param width number
 local function assert_toggle_inside_card(args, width)
 	local refs = {
 		toggle_card = view_module.ref(),
@@ -69,7 +125,7 @@ local function assert_toggle_inside_card(args, width)
 		w = width,
 		h = args.height,
 	}
-	view:mount("components_showcase", {
+	view:mount("test/feature/components_showcase", {
 		width = width,
 		height = args.height,
 		refs = refs,
@@ -89,6 +145,8 @@ function M.run(args)
 	icon.init "asset/icons.dl"
 
 	assert_select_large_clickable(args, args.width)
+	assert_select_closes_after_other_card_click(args, args.width)
+	assert_select_closes_after_empty_page_click(args, args.width)
 	assert_toggle_inside_card(args, COMPACT_WIDTH)
 
 	local wide_width = args.width + 400

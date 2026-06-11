@@ -31,7 +31,7 @@ return function(args)
 	local stats_count = -1
 	local stats_label
 
-	local root = view:mount("components_showcase", {
+	local root = view:mount("test/feature/components_showcase", {
 		width = args.width,
 		height = args.height,
 	})

@@ -46,6 +46,14 @@ end
 
 return function()
 	local open = args.open == true
+	view.dismissable {
+		enabled = open,
+		on_dismiss = function(event)
+			if args.on_open_change then
+				args.on_open_change(false, event)
+			end
+		end,
+	}
 	local rotation = open and pi or 0
 	local button_fill = background
 	if pressed() then

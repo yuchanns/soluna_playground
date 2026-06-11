@@ -57,12 +57,6 @@ local enabled_toggle = view.value(true)
 local disabled_toggle = view.value(false)
 local button_clicks = view.value(0)
 
-view.clickable {
-	on_click = function()
-		select_open(false)
-	end,
-}
-
 local function card(title, subtitle, layout, children)
 	local style = {
 	}
