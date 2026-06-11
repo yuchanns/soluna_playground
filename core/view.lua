@@ -601,6 +601,37 @@ end
 local View = {}; do
 	View.__index = View
 
+	---@param instance ViewInstance
+	---@param key "w"|"h"
+	---@param track boolean?
+	---@return number
+	local function instance_layout_axis(instance, key, track)
+		local value = instance.layout[key]
+		if value ~= nil then
+			return value
+		end
+		local parent = instance.parent
+		if parent then
+			if track then
+				parent.layout_version()
+			end
+			return instance_layout_axis(parent, key, track)
+		end
+		if track then
+			instance.view.layout_version()
+		end
+		if key == "w" then
+			return instance.view.w
+		end
+		return instance.view.h
+	end
+
+	---@param instance ViewInstance
+	---@param track boolean?
+	---@return number, number
+	local function instance_size(instance, track)
+		return instance_layout_axis(instance, "w", track), instance_layout_axis(instance, "h", track)
+	end
 
 	---@class (partial) ViewInstance
 	local Instance = {}; do
@@ -610,7 +641,7 @@ local View = {}; do
 		function Instance:container_size()
 			local parent = self.parent
 			if parent then
-				return parent.layout.w or self.view.w, parent.layout.h or self.view.h
+				return instance_size(parent)
 			end
 			return self.view.w, self.view.h
 		end
@@ -646,12 +677,7 @@ local View = {}; do
 		---@param y number
 		---@return boolean
 		function Instance:contains(x, y)
-			local layout = self.layout
-			local w = layout.w
-			local h = layout.h
-			if w == nil or h == nil then
-				return true
-			end
+			local w, h = instance_size(self)
 			local lx, ly = self:local_point(x, y)
 			return lx >= 0 and lx <= w and ly >= 0 and ly <= h
 		end
@@ -744,6 +770,8 @@ local View = {}; do
 	local hit_instance
 	---@type fun(node: ViewRenderNode, x: number, y: number): ViewInstance?, number?, number?
 	local hit_render_node
+	---@type fun(node: ViewRenderNode): number, number
+	local render_node_origin
 
 	---@param value ViewValue<boolean>?
 	---@param state boolean
@@ -800,8 +828,7 @@ local View = {}; do
 		local render_node = instance.render_node
 		if render_node then
 			local x, y = yoga.node_get(render_node.node)
-			local owner = assert(render_node.owner)
-			local ox, oy = instance_origin(owner)
+			local ox, oy = render_node_origin(render_node)
 			return ox + x, oy + y
 		end
 		local x, y = instance:origin()
@@ -811,6 +838,26 @@ local View = {}; do
 			return px + x, py + y
 		end
 		return x, y
+	end
+
+	---@param node ViewRenderNode
+	---@return ViewRenderNode
+	local function render_tree_root(node)
+		while node.parent do
+			node = node.parent
+		end
+		return node
+	end
+
+	---@param node ViewRenderNode
+	---@return number, number
+	render_node_origin = function(node)
+		local root = render_tree_root(node)
+		local owner = root.owner
+		if owner then
+			return instance_origin(owner)
+		end
+		return 0, 0
 	end
 
 	---@param instance ViewInstance
@@ -830,11 +877,9 @@ local View = {}; do
 		if target.node then
 			---@cast target ViewRenderNode
 			local x, y, w, h = yoga.node_get(target.node)
-			if target.owner then
-				local ox, oy = instance_origin(target.owner)
-				x = x + ox
-				y = y + oy
-			end
+			local ox, oy = render_node_origin(target)
+			x = x + ox
+			y = y + oy
 			return {
 				x = x,
 				y = y,
@@ -844,11 +889,12 @@ local View = {}; do
 		end
 		---@cast target ViewInstance
 		local x, y = instance_origin(target)
+		local w, h = instance_size(target)
 		return {
 			x = x,
 			y = y,
-			w = target.layout.w or 0,
-			h = target.layout.h or 0,
+			w = w,
+			h = h,
 		}
 	end
 
@@ -902,21 +948,25 @@ local View = {}; do
 	hit_render_node = function(node, x, y)
 		for i = #node.children, 1, -1 do
 			local child = node.children[i]
-			local cx, cy = yoga.node_get(child.node)
-			if child.kind == "component" and child.instance then
-				local lx = x - cx
-				local ly = y - cy
-				local target, tx, ty = hit_instance(child.instance, lx, ly)
-				if target then
-					return target, tx, ty
-				end
-				goto continue
-			end
 			local target, tx, ty = hit_render_node(child, x, y)
 			if target then
 				return target, tx, ty
 			end
-			::continue::
+		end
+		if node.kind == "component" and node.instance then
+			local cx, cy, cw, ch = yoga.node_get(node.node)
+			local lx = x - cx
+			local ly = y - cy
+			local instance = node.instance
+			for i = #instance.children, 1, -1 do
+				local target, tx, ty = hit_instance(instance.children[i], lx, ly)
+				if target then
+					return target, tx, ty
+				end
+			end
+			if lx >= 0 and lx <= cw and ly >= 0 and ly <= ch and clickable_enabled(instance) then
+				return instance, lx, ly
+			end
 		end
 		return nil, nil, nil
 	end
@@ -1265,23 +1315,10 @@ local View = {}; do
 		local translate_x, translate_y, scale, rotation = draw_transform(props)
 		local draw_x = local_x + translate_x
 		local draw_y = local_y + translate_y
+		local component_instance
 		if node.kind == "component" then
-			local instance = assert(node.instance)
-			set_instance_layout(instance, 0, 0, w, h)
-			out[#out + 1] = {
-				name = "component",
-				args = {},
-				draw = function(batch)
-					if scale ~= 1 or rotation ~= 0 then
-						batch:layer(scale, rotation, draw_x, draw_y)
-					else
-						batch:layer(draw_x, draw_y)
-					end
-					draw_node(batch, instance)
-					batch:layer()
-				end,
-			}
-			return
+			component_instance = assert(node.instance)
+			set_instance_layout(component_instance, 0, 0, w, h)
 		end
 
 		if scale ~= 1 or rotation ~= 0 then
@@ -1318,6 +1355,18 @@ local View = {}; do
 		for i = 1, #node.children do
 			compile_render_node(node.children[i], out, x, y)
 		end
+		if component_instance then
+			for i = 1, #component_instance.children do
+				local child = component_instance.children[i]
+				out[#out + 1] = {
+					name = "component_child",
+					args = {},
+					draw = function(batch)
+						draw_node(batch, child)
+					end,
+				}
+			end
+		end
 		out[#out + 1] = command "layer"
 	end
 
@@ -1325,9 +1374,10 @@ local View = {}; do
 	---@return ViewCommand[]
 	local function compile_render_tree(instance)
 		local root = render_root(instance)
+		local w, h = instance_size(instance, true)
 		yoga.node_set(root.node, {
-			width = instance.layout.w or instance.view.w,
-			height = instance.layout.h or instance.view.h,
+			width = w,
+			height = h,
 		})
 		yoga.node_calc(root.node)
 
@@ -1394,13 +1444,23 @@ local View = {}; do
 		})
 	end
 
+	---@param instance ViewInstance
+	---@return ViewInstance
+	local function root_instance(instance)
+		while instance.parent do
+			instance = instance.parent
+		end
+		return instance
+	end
+
 	---@param view View
 	---@param chunk string
 	---@param props table?
 	---@param parent ViewInstance?
 	---@param append boolean
+	---@param render_node ViewRenderNode?
 	---@return ViewInstance
-	function mount_component(view, chunk, props, parent, append)
+	function mount_component(view, chunk, props, parent, append, render_node)
 		local path = assert(file.searchpath(chunk, view.resources.component_path))
 		local source = assert(file.load(path))
 		---@diagnostic disable-next-line: assign-type-mismatch
@@ -1420,6 +1480,7 @@ local View = {}; do
 			mounted = true,
 			layout_version = view.scope:value(0),
 			props = {},
+			render_node = render_node,
 		}, Instance)
 		local args = component_args(instance)
 		instance.args = args
@@ -1450,6 +1511,7 @@ local View = {}; do
 			if not instance.mounted then
 				return
 			end
+			local nested_render = active_render ~= nil
 			if not instance.parent then
 				view.layout_version()
 			end
@@ -1467,7 +1529,7 @@ local View = {}; do
 			local render_ctx = {
 				view = view,
 				instance = instance,
-				parent = render_root(instance),
+				parent = instance.render_node or render_root(instance),
 			}
 			active = ctx
 			active_render = render_ctx
@@ -1476,7 +1538,14 @@ local View = {}; do
 				render_ctx.parent.cursor = 1
 				draw()
 				remove_render_children_from(render_ctx.parent, render_ctx.parent.cursor)
-				instance.commands = compile_render_tree(instance)
+				if instance.render_node then
+					if not nested_render then
+						local root = root_instance(instance)
+						root.commands = compile_render_tree(root)
+					end
+				else
+					instance.commands = compile_render_tree(instance)
+				end
 			end)
 			active = prev
 			active_render = prev_render
@@ -1561,9 +1630,9 @@ local View = {}; do
 				owner = ctx.instance,
 				children = {},
 				cursor = 1,
-				instance = mount_component(self, chunk, props, ctx.instance, false),
 			}
 			parent.children[index] = node
+			node.instance = mount_component(self, chunk, props, ctx.instance, false, node)
 		else
 			patch_props(assert(node.instance), props)
 		end
