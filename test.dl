@@ -1,14 +1,17 @@
-entry : test/showcase_interaction.lua
+entry : test.lua
 width : 1200
 height : 800
 high_dpi : true
-window_title : "Showcase Interaction Test"
+window_title : "View Tests"
 background : 0xfff3f4f6
 extlua_entry : playground_init
 extlua_preload : playground
 extlua_material :
   rounded_rect
 extlua_material_path : material/?.lua
+perf_rows : 1000
+perf_update_step : 10
+perf_parent_interval : 60
 text_sampler :
   min_filter : linear
   mag_filter : linear

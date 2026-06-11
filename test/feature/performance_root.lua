@@ -83,8 +83,8 @@ return function()
 			height = rows * ROW_HEIGHT,
 			background = PANEL_BG,
 		}, function()
-			for i = 1, rows do
-				view.mount("test/performance_row", {
+			for i = 1, #values do
+				view.mount("test/feature/performance_row", {
 					key = i,
 					index = i,
 					value = values[i],

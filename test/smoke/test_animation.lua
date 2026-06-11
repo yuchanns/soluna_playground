@@ -1,20 +1,6 @@
-local app = require "soluna.app"
-local soluna = require "soluna"
-local view = require "core.view".new {
-	width = 120,
-	height = 120,
-}
+local view_module = require "core.view"
 
-soluna.set_window_title "View Animation Test"
-
-local report = {}
-local root = view:mount("test/animation_root", {
-	width = 120,
-	height = 120,
-	on = false,
-	show = false,
-	report = report,
-})
+local M = {}
 
 local function assert_range(value, min, max, message)
 	if value < min or value > max then
@@ -28,9 +14,20 @@ local function assert_equal(actual, expected, message)
 	end
 end
 
-local C = {}
+function M.run()
+	local view = view_module.new {
+		width = 120,
+		height = 120,
+	}
+	local report = {}
+	local root = view:mount("test/smoke/animation_root", {
+		width = 120,
+		height = 120,
+		on = false,
+		show = false,
+		report = report,
+	})
 
-function C.frame()
 	view:update(0)
 	assert_equal(report.animated, 0, "animated should start at target")
 	assert_equal(report.transition_mounted, false, "hidden transition should not mount children")
@@ -58,8 +55,6 @@ function C.frame()
 	assert_equal(report.transition_mounted, true, "leaving transition should keep children mounted")
 	view:update(1)
 	assert_equal(report.transition_mounted, false, "left transition should unmount children")
-
-	app.quit()
 end
 
-return C
+return M

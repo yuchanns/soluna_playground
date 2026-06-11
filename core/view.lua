@@ -1054,6 +1054,7 @@ local View = {}; do
 
 	---@param node ViewRenderNode
 	local function dispose_render_instances(node)
+		bind_ref(node, nil, node)
 		if node.transition then
 			node.transition.animation:stop()
 			node.transition = nil
@@ -1074,7 +1075,6 @@ local View = {}; do
 			return
 		end
 		dispose_render_instances(node)
-		bind_ref(node, nil, node)
 		yoga.node_remove(parent.node, node.node)
 		yoga.node_free(node.node)
 		table.remove(parent.children, index)
