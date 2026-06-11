@@ -130,6 +130,7 @@ local compile_render_tree
 ---@field args table
 ---@field clickable ViewClickable?
 ---@field dismissable ViewDismissable?
+---@field dismissable_index integer?
 ---@field hovered ViewValue<boolean>?
 ---@field pressed ViewValue<boolean>?
 ---@field ref ViewRef?
@@ -148,6 +149,7 @@ local compile_render_tree
 ---@field stats ViewStatistics
 ---@field resources table
 ---@field animations ViewAnimation[]
+---@field dismissables ViewInstance[]
 ---@field effect_order integer
 
 ---@class ViewContext
@@ -225,6 +227,34 @@ local active_render
 
 ---@type ViewCommand[]?
 local active_batch
+
+---@param view View
+---@param instance ViewInstance
+local function register_dismissable(view, instance)
+	if instance.dismissable_index then
+		return
+	end
+	local dismissables = view.dismissables
+	local index = #dismissables + 1
+	dismissables[index] = instance
+	instance.dismissable_index = index
+end
+
+---@param instance ViewInstance
+local function unregister_dismissable(instance)
+	local index = instance.dismissable_index
+	if not index then
+		return
+	end
+	local dismissables = instance.view.dismissables
+	local last = dismissables[#dismissables]
+	dismissables[index] = last
+	dismissables[#dismissables] = nil
+	if last and last ~= instance then
+		last.dismissable_index = index
+	end
+	instance.dismissable_index = nil
+end
 
 ---@param name string
 ---@param ... any
@@ -662,6 +692,7 @@ local View = {}; do
 				view.pressed_instance = nil
 				view.pressed_button = nil
 			end
+			unregister_dismissable(self)
 			self.mounted = nil
 			if self.ref and self.ref.current == self then
 				self.ref.current = nil
@@ -834,30 +865,18 @@ local View = {}; do
 		end
 	end
 
-	---@type fun(node: ViewRenderNode, target: ViewInstance?, x: number, y: number, button: integer?)
-	local notify_dismissable_node
-
 	---@param view View
 	---@param target ViewInstance?
 	---@param x number
 	---@param y number
 	---@param button integer?
 	local function notify_dismissable(view, target, x, y, button)
-		for i = #view.instances, 1, -1 do
-			local node = view.instances[i].render_node
-			if node then
-				notify_dismissable_node(node, target, x, y, button)
+		local dismissables = view.dismissables
+		for i = #dismissables, 1, -1 do
+			local instance = dismissables[i]
+			if instance.mounted and dismissable_enabled(instance) and not target_inside(target, instance) then
+				call_dismissable(instance, target, x, y, button)
 			end
-		end
-	end
-
-	notify_dismissable_node = function(node, target, x, y, button)
-		for i = #node.children, 1, -1 do
-			notify_dismissable_node(node.children[i], target, x, y, button)
-		end
-		local instance = node.instance
-		if instance and instance.mounted and dismissable_enabled(instance) and not target_inside(target, instance) then
-			call_dismissable(instance, target, x, y, button)
 		end
 	end
 
@@ -1811,6 +1830,7 @@ function M.new(args)
 		h = args.h or args.height or 0,
 		layout_version = scope:value(0),
 		animations = {},
+		dismissables = {},
 		effect_order = 0,
 		stats = {
 			render_count = 0,
@@ -1917,7 +1937,13 @@ end
 function M.dismissable(props)
 	---@cast active ViewContext
 	local instance = assert(active.instance)
-	instance.dismissable = props or {}
+	if props then
+		instance.dismissable = props
+		register_dismissable(active.view, instance)
+	else
+		unregister_dismissable(instance)
+		instance.dismissable = nil
+	end
 end
 
 ---@return ViewValue<boolean>
