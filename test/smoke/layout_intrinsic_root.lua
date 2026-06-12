@@ -1,7 +1,12 @@
 local view = require "core.view"
 
 local args = ...
-local refs <const> = assert(args.refs)
+local refs <const> = {
+	component = view.ref(),
+	header = view.ref(),
+	body = view.ref(),
+}
+assert(args.report).refs = refs
 
 return function()
 	view.vbox({

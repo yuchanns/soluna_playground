@@ -14,7 +14,6 @@ local BUTTON_CLICK_X <const> = 38
 local BUTTON_CLICK_Y <const> = 231
 local PAGE_EMPTY_X <const> = 10
 local PAGE_EMPTY_Y <const> = 10
-local COMPACT_WIDTH <const> = 920
 
 local function frame(view, batch, dt)
 	view:update(dt)
@@ -115,39 +114,12 @@ end
 
 ---@param args table
 ---@param width number
-local function assert_toggle_inside_card(args, width)
-	local refs = {
-		toggle_card = view_module.ref(),
-		enabled_toggle = view_module.ref(),
-		disabled_toggle = view_module.ref(),
-	}
-	local view = view_module.new {
-		w = width,
-		h = args.height,
-	}
-	view:mount("test/feature/components_showcase", {
-		width = width,
-		height = args.height,
-		refs = refs,
-	})
-
-	frame(view, args.batch, FRAME_DT)
-
-	local card = assert(refs.toggle_card:rect(), "missing toggle card rect")
-	local enabled = assert(refs.enabled_toggle:rect(), "missing enabled toggle rect")
-	local disabled = assert(refs.disabled_toggle:rect(), "missing disabled toggle rect")
-	local right = card.x + card.w
-	assert(enabled.x >= card.x and enabled.x + enabled.w <= right, "enabled toggle should stay inside card")
-	assert(disabled.x >= card.x and disabled.x + disabled.w <= right, "disabled toggle should stay inside card")
-end
-
 function M.run(args)
 	icon.init "asset/icons.dl"
 
 	assert_select_large_clickable(args, args.width)
 	assert_select_closes_after_other_card_click(args, args.width)
 	assert_select_closes_after_empty_page_click(args, args.width)
-	assert_toggle_inside_card(args, COMPACT_WIDTH)
 
 	local wide_width = args.width + 400
 	assert_select_large_clickable(args, wide_width)

@@ -17,20 +17,17 @@ local function test_intrinsic_component()
 		width = 200,
 		height = 140,
 	}
-	local refs = {
-		component = view_module.ref(),
-		header = view_module.ref(),
-		body = view_module.ref(),
-	}
+	local report = {}
 	local root = view:mount("test/smoke/layout_intrinsic_root", {
 		width = 200,
 		height = 140,
 		show = true,
-		refs = refs,
+		report = report,
 	})
 
 	view:update(0)
 
+	local refs = assert(report.refs, "missing layout refs")
 	local component = assert_rect(refs.component, "component")
 	local header = assert_rect(refs.header, "header")
 	local body = assert_rect(refs.body, "body")
@@ -54,19 +51,16 @@ local function test_parent_size()
 		width = 200,
 		height = 120,
 	}
-	local refs = {
-		container = view_module.ref(),
-		component = view_module.ref(),
-		inner = view_module.ref(),
-	}
+	local report = {}
 	view:mount("test/smoke/layout_parent_size_root", {
 		width = 200,
 		height = 120,
-		refs = refs,
+		report = report,
 	})
 
 	view:update(0)
 
+	local refs = assert(report.refs, "missing layout refs")
 	local container = assert_rect(refs.container, "container")
 	local component = assert_rect(refs.component, "component")
 	local inner = assert_rect(refs.inner, "inner")
@@ -85,24 +79,42 @@ local function test_parent_size()
 	assert_equal(inner.h, container.h, "inner host should fill container height")
 end
 
+local function test_ref_rect_uses_owner_local_coordinates()
+	local view = view_module.new {
+		width = 200,
+		height = 120,
+	}
+	local report = {}
+	view:mount("test/smoke/ref_owner_root", {
+		position = "absolute",
+		left = 20,
+		top = 10,
+		report = report,
+	})
+	view:update(0)
+
+	local rect = assert(report.child_ref:rect(), "missing component-owned child rect")
+	assert_equal(rect.x, 6, "ref rect should be local to the owner component")
+	assert_equal(rect.y, 4, "ref rect should ignore the owner component root offset")
+	assert_equal(rect.w, 12, "ref rect should keep child width")
+	assert_equal(rect.h, 8, "ref rect should keep child height")
+end
+
 local function test_direct_destroy_detaches_layout()
 	local view = view_module.new {
 		width = 200,
 		height = 140,
 	}
-	local refs = {
-		component = view_module.ref(),
-		header = view_module.ref(),
-		body = view_module.ref(),
-	}
+	local report = {}
 	view:mount("test/smoke/layout_intrinsic_root", {
 		width = 200,
 		height = 140,
 		show = true,
-		refs = refs,
+		report = report,
 	})
 
 	view:update(0)
+	local refs = assert(report.refs, "missing layout refs")
 	assert_equal(assert_rect(refs.body, "body").y, 74, "body should start below mounted component")
 
 	assert(refs.component.current, "missing component instance"):destroy()
@@ -115,6 +127,7 @@ end
 function M.run()
 	test_intrinsic_component()
 	test_parent_size()
+	test_ref_rect_uses_owner_local_coordinates()
 	test_direct_destroy_detaches_layout()
 end
 

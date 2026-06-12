@@ -82,8 +82,8 @@ Drawing traverses the calculated unified tree.
 
 Refs and hit testing should use Yoga coordinates from the unified tree.
 
-- `ref:rect()` reads the target node's calculated global rect.
-- Component refs point to their wrapper node.
+- `ref:rect()` reads the target node rect relative to the component that created the ref.
+- Component refs point to their wrapper node, but the exposed rect still uses the ref owner's local coordinate space.
 - Pointer events target clickable component instances.
 - Local pointer coordinates are relative to the target component wrapper.
 
@@ -137,7 +137,7 @@ Add or keep focused tests for these cases:
 
 ### Phase 3: Rework Geometry
 
-- Reimplement `rect_of`, hit testing, and pointer local coordinates against the unified Yoga tree.
+- Reimplement internal global geometry, `ref:rect()` owner-local geometry, hit testing, and pointer local coordinates against the unified Yoga tree.
 - Keep refs on host nodes and component wrappers.
 - Add tests for nested refs and nested click targets.
 

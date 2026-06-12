@@ -194,6 +194,8 @@ local compile_render_tree
 ---@field render_count integer
 
 ---@class (partial) ViewRef
+---A component-owned geometry handle. `rect()` returns owner-local coordinates.
+---@field owner ViewInstance
 ---@field current any
 ---@field rect fun(self: ViewRef): ViewRect?
 
@@ -364,7 +366,25 @@ local Ref = {}; do
 
 	---@return ViewRect?
 	function Ref:rect()
-		return rect_of(self.current)
+		local target = self.current
+		if not target then
+			return nil
+		end
+		local owner = self.owner
+		if not owner.mounted then
+			return nil
+		end
+		local rect = rect_of(target)
+		local base = rect_of(owner)
+		if not rect or not base then
+			return nil
+		end
+		return {
+			x = rect.x - base.x,
+			y = rect.y - base.y,
+			w = rect.w,
+			h = rect.h,
+		}
 	end
 end
 
@@ -1974,7 +1994,10 @@ end
 
 ---@return ViewRef
 function M.ref()
-	return setmetatable({}, Ref)
+	local context = assert(active)
+	return setmetatable({
+		owner = assert(context.instance),
+	}, Ref)
 end
 
 ---@param chunk string

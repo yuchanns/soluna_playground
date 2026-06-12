@@ -14,7 +14,7 @@ Before editing a view component or runtime behavior, identify:
 - **Built-ins**: use `view.clickable`, `view.hovered`, `view.pressed`, `view.ref`, `view.value`, `view.computed`, `view.animated`, and `view.transition` before adding APIs.
 - **Render props**: read state during render and pass ordinary prop snapshots to children. Pass callable `ViewValue` objects only when the child intentionally participates in the same reactive state.
 - **Event flow**: child components report interaction through callback props; owner components update their own state.
-- **Geometry**: use `ref = some_ref` and `some_ref:rect()` for anchors, hit targets, and tests.
+- **Geometry**: create refs inside the component that owns the geometry, then use `some_ref:rect()` for owner-local anchors and hit targets.
 - **Drawing**: use layout components for ordinary structure. Use `view.canvas` plus `view.batch` when exact visual alignment or custom material drawing belongs to one owner.
 - **Observation**: performance counters and debug HUDs should observe the view from outside the view tree with Soluna batch drawing.
 - **API surface**: export only domain-level props or runtime methods needed by current components.
@@ -116,6 +116,12 @@ function C.frame()
 	-- Draw HUD text with soluna.material.text directly into batch.
 end
 ```
+
+## Refs And Coordinates
+
+`view.ref()` is a component-owned geometry handle. Create refs while the owning component chunk is loading or rendering. `ref:rect()` returns the target rect in the coordinate space of the component that created the ref, matching pointer event local coordinates used by component callbacks.
+
+Use refs for component behavior, such as local hit testing or anchoring visual elements inside the same component. Do not create refs from tests or app-level imperative code just to read root/global geometry; test user-facing behavior through clicks, pointer movement, or component-owned reporting helpers.
 
 ## Canvas And Custom Drawing
 
