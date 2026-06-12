@@ -121,7 +121,7 @@ end
 
 `view.ref()` is a component-owned geometry handle. Create refs while the owning component chunk is loading or rendering. `ref:rect()` returns the target rect in the coordinate space of the component that created the ref, matching pointer event local coordinates used by component callbacks.
 
-Use refs for component behavior, such as local hit testing or anchoring visual elements inside the same component. Do not create refs from tests or app-level imperative code just to read root/global geometry; test user-facing behavior through clicks, pointer movement, or component-owned reporting helpers.
+Use refs for component behavior, such as local hit testing or anchoring visual elements inside the same component. Do not create refs from tests or app-level imperative code just to inspect view tree geometry from outside a component; test user-facing behavior through clicks, pointer movement, or component-owned reporting helpers.
 
 ## Canvas And Custom Drawing
 

@@ -90,6 +90,8 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field queue table<integer, ViewEffect?>
 ---@field queue_head integer
 ---@field queue_tail integer
+---@field flushing integer?
+---@field after_flush_batch fun()?
 
 ---@class (partial) ViewValue<T>
 ---@overload fun(): T
@@ -115,6 +117,10 @@ local dispose_render_instances
 local root_instance
 ---@type fun(instance: ViewInstance): ViewCommand[]
 local compile_render_tree
+---@type fun(view: View)
+local flush_dirty_roots
+---@type fun(view: View, root: ViewInstance)
+local schedule_render_tree_compile
 
 ---@class (partial) ViewInstance
 ---@field view View
@@ -129,6 +135,7 @@ local compile_render_tree
 ---@field props table
 ---@field args table
 ---@field clickable ViewClickable?
+---@field clickable_prop_bindings table<any, string>?
 ---@field dismissable ViewDismissable?
 ---@field dismissable_index integer?
 ---@field hovered ViewValue<boolean>?
@@ -151,6 +158,8 @@ local compile_render_tree
 ---@field animations ViewAnimation[]
 ---@field dismissables ViewInstance[]
 ---@field effect_order integer
+---@field dirty_roots table<ViewInstance, boolean>
+---@field dirty_root_order ViewInstance[]
 
 ---@class ViewContext
 ---@field view View
@@ -158,6 +167,7 @@ local compile_render_tree
 ---@field disposables ViewDisposable[]?
 ---@field drawing boolean?
 ---@field rendering boolean?
+---@field setup_prop_reads table<any, boolean>?
 
 ---@class ViewRenderContext
 ---@field view View
@@ -194,7 +204,8 @@ local compile_render_tree
 ---@field render_count integer
 
 ---@class (partial) ViewRef
----A component-owned geometry handle. `rect()` returns owner-local coordinates.
+--- A component-owned geometry handle.
+--- `rect()` returns the target geometry in the coordinate space of the component that created the ref.
 ---@field owner ViewInstance
 ---@field current any
 ---@field rect fun(self: ViewRef): ViewRect?
@@ -560,40 +571,56 @@ local Scope = {}; do
 	end
 
 	function Scope:flush()
-		while self.queue_head <= self.queue_tail do
-			---@type ViewEffect[]
-			local batch = {}
-			local count = 0
-			while self.queue_head <= self.queue_tail do
-				local head = self.queue_head
-				local effect = self.queue[head]
-				self.queue[head] = nil
-				self.queue_head = head + 1
-				if effect and not effect.stopped then
-					count = count + 1
-					batch[count] = effect
-				end
-			end
-			if count > 1 then
-				table.sort(batch, function(a, b)
-					if a.order == b.order then
-						return (a.queue_order or 0) < (b.queue_order or 0)
+		local previous_flushing = self.flushing or 0
+		self.flushing = previous_flushing + 1
+		local ok, err = pcall(function()
+			while true do
+				while self.queue_head <= self.queue_tail do
+					---@type ViewEffect[]
+					local batch = {}
+					local count = 0
+					while self.queue_head <= self.queue_tail do
+						local head = self.queue_head
+						local effect = self.queue[head]
+						self.queue[head] = nil
+						self.queue_head = head + 1
+						if effect and not effect.stopped then
+							count = count + 1
+							batch[count] = effect
+						end
 					end
-					return a.order < b.order
-				end)
-			end
-			for i = 1, count do
-				local effect = batch[i]
-				---@cast effect ViewEffect
-				if effect.queued and not effect.stopped then
-					effect.queued = nil
-					effect.queue_order = nil
-					self:run(effect)
+					if count > 1 then
+						table.sort(batch, function(a, b)
+							if a.order == b.order then
+								return (a.queue_order or 0) < (b.queue_order or 0)
+							end
+							return a.order < b.order
+						end)
+					end
+					for i = 1, count do
+						local effect = batch[i]
+						---@cast effect ViewEffect
+						if effect.queued and not effect.stopped then
+							effect.queued = nil
+							effect.queue_order = nil
+							self:run(effect)
+						end
+					end
+				end
+				if self.after_flush_batch then
+					self.after_flush_batch()
+				end
+				if self.queue_head > self.queue_tail then
+					break
 				end
 			end
+			self.queue_head = 1
+			self.queue_tail = 0
+		end)
+		self.flushing = previous_flushing > 0 and previous_flushing or nil
+		if not ok then
+			error(err, 0)
 		end
-		self.queue_head = 1
-		self.queue_tail = 0
 	end
 end
 
@@ -751,7 +778,7 @@ local View = {}; do
 				yoga.node_free(render_node.node)
 			end
 			if root and root.mounted then
-				root.commands = compile_render_tree(root)
+				schedule_render_tree_compile(view, root)
 			end
 			self.commands = nil
 		end
@@ -1379,6 +1406,49 @@ local View = {}; do
 		return out
 	end
 
+	---@param view View
+	function flush_dirty_roots(view)
+		local order = view.dirty_root_order
+		local dirty = view.dirty_roots
+		for i = 1, #order do
+			local root = order[i]
+			order[i] = nil
+			dirty[root] = nil
+			if root.mounted and root.render_node then
+				local prev_active = active
+				local prev_effect = view.scope.active
+				active = {
+					view = view,
+					instance = root,
+				}
+				view.scope.active = root.effect
+				local ok, commands = pcall(compile_render_tree, root)
+				active = prev_active
+				view.scope.active = prev_effect
+				if not ok then
+					error(commands, 0)
+				end
+				---@cast commands ViewCommand[]
+				root.commands = commands
+			end
+		end
+	end
+
+	---@param view View
+	---@param root ViewInstance
+	function schedule_render_tree_compile(view, root)
+		if not root.mounted then
+			return
+		end
+		if not view.dirty_roots[root] then
+			view.dirty_roots[root] = true
+			view.dirty_root_order[#view.dirty_root_order + 1] = root
+		end
+		if not view.scope.flushing then
+			flush_dirty_roots(view)
+		end
+	end
+
 	---@param props table?
 	---@return ViewLayout
 	local function layout(props)
@@ -1400,6 +1470,13 @@ local View = {}; do
 			return
 		end
 		props[key] = value
+		local clickable_bindings = instance.clickable_prop_bindings
+		if clickable_bindings then
+			local field = clickable_bindings[key]
+			if field and instance.clickable then
+				instance.clickable[field] = value
+			end
+		end
 		instance.view.scope:trigger(props, key)
 	end
 
@@ -1423,7 +1500,12 @@ local View = {}; do
 		return setmetatable({}, {
 			__index = function(_, key)
 				local props = instance.props
-				instance.view.scope:track(props, key)
+				local context = active
+				if context and context.instance == instance and context.setup_prop_reads then
+					context.setup_prop_reads[key] = true
+				else
+					instance.view.scope:track(props, key)
+				end
 				return props[key]
 			end,
 			__newindex = function(_, key, value)
@@ -1476,17 +1558,22 @@ local View = {}; do
 		local args = component_args(instance)
 		instance.args = args
 		patch_props(instance, props)
+		render_node.props = instance.props
 		bind_ref(instance, props and props.ref, instance)
 
 		local prev = active
+		local prev_effect = view.scope.active
 		---@type ViewContext
 		active = {
 			view = view,
 			instance = instance,
 			disposables = instance.disposables,
+			setup_prop_reads = {},
 		}
+		view.scope.active = nil
 		local result = table.pack(pcall(chunk, args))
 		---@cast result table<integer, any>
+		view.scope.active = prev_effect
 		active = prev
 		if not result[1] then
 			error(result[2], 0)
@@ -1528,8 +1615,7 @@ local View = {}; do
 				draw()
 				remove_render_children_from(render_ctx.parent, render_ctx.parent.cursor)
 				if not nested_render then
-					local root = root_instance(instance)
-					root.commands = compile_render_tree(root)
+					schedule_render_tree_compile(view, root_instance(instance))
 				end
 			end)
 			active = prev
@@ -1633,6 +1719,7 @@ local View = {}; do
 		end
 		local instance = assert(node.instance)
 		instance.render_node = node
+		node.props = instance.props
 		bind_ref(instance, props and props.ref, instance)
 		yoga.node_set(node.node, layout_style(props))
 		return instance
@@ -1843,7 +1930,7 @@ function M.new(args)
 		queue_tail = 0,
 	}, Scope)
 	---@type View
-	return setmetatable({
+	local view = setmetatable({
 		scope = scope,
 		instances = {},
 		w = args.w or args.width or 0,
@@ -1851,6 +1938,8 @@ function M.new(args)
 		layout_version = scope:value(0),
 		animations = {},
 		dismissables = {},
+		dirty_roots = {},
+		dirty_root_order = {},
 		effect_order = 0,
 		stats = {
 			render_count = 0,
@@ -1863,6 +1952,10 @@ function M.new(args)
 			component_path = args.component_path or COMPONENT_PATH,
 		},
 	}, View)
+	scope.after_flush_batch = function()
+		flush_dirty_roots(view)
+	end
+	return view
 end
 
 ---@class (partial) ViewComputedState<T>
@@ -1946,11 +2039,46 @@ function M.animated(fn, opts)
 	return animation
 end
 
+local clickable_prop_keys <const> = {
+	enabled = true,
+	on_click = true,
+	on_pointer_down = true,
+	on_pointer_up = true,
+	on_pointer_enter = true,
+	on_pointer_leave = true,
+	on_pointer_move = true,
+}
+
+---@param instance ViewInstance
+---@param props table?
+---@param prop_keys table<any, boolean>
+---@return table<any, string>?
+local function setup_prop_bindings(instance, props, prop_keys)
+	if not props then
+		return nil
+	end
+	local context = active
+	local reads = context and context.instance == instance and context.setup_prop_reads or nil
+	if not reads then
+		return nil
+	end
+	local bindings
+	for key in pairs(reads) do
+		local value = props[key]
+		if prop_keys[key] and value == instance.props[key] then
+			bindings = bindings or {}
+			bindings[key] = key
+		end
+	end
+	return bindings
+end
+
 ---@param props ViewClickable?
 function M.clickable(props)
 	---@cast active ViewContext
 	local instance = assert(active.instance)
 	instance.clickable = props or {}
+	instance.clickable_prop_bindings = setup_prop_bindings(instance, props, clickable_prop_keys)
 end
 
 ---@param props ViewDismissable?

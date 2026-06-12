@@ -137,7 +137,7 @@ Add or keep focused tests for these cases:
 
 ### Phase 3: Rework Geometry
 
-- Reimplement internal global geometry, `ref:rect()` owner-local geometry, hit testing, and pointer local coordinates against the unified Yoga tree.
+- Reimplement internal tree-space geometry for hit testing, while keeping `ref:rect()` owner-local against the unified Yoga tree.
 - Keep refs on host nodes and component wrappers.
 - Add tests for nested refs and nested click targets.
 
