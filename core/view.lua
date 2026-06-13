@@ -90,7 +90,8 @@ local COMPONENT_PATH <const> = "?.lua;?/init.lua"
 ---@field queue table<integer, ViewEffect?>
 ---@field queue_head integer
 ---@field queue_tail integer
----@field flushing integer?
+---@field flush_batch ViewEffect[]
+---@field flushing true?
 ---@field after_flush_batch fun()?
 
 ---@class (partial) ViewValue<T>
@@ -570,54 +571,68 @@ local Scope = {}; do
 		return effect
 	end
 
-	function Scope:flush()
-		local previous_flushing = self.flushing or 0
-		self.flushing = previous_flushing + 1
-		local ok, err = pcall(function()
-			while true do
+	---@param batch ViewEffect[]
+	local function clear_batch(batch)
+		for i = 1, #batch do
+			batch[i] = nil
+		end
+	end
+
+	---@param self ViewScope
+	---@param batch ViewEffect[]
+	local function flush(self, batch)
+		while true do
+			while self.queue_head <= self.queue_tail do
+				local count = 0
 				while self.queue_head <= self.queue_tail do
-					---@type ViewEffect[]
-					local batch = {}
-					local count = 0
-					while self.queue_head <= self.queue_tail do
-						local head = self.queue_head
-						local effect = self.queue[head]
-						self.queue[head] = nil
-						self.queue_head = head + 1
-						if effect and not effect.stopped then
-							count = count + 1
-							batch[count] = effect
+					local head = self.queue_head
+					local effect = self.queue[head]
+					self.queue[head] = nil
+					self.queue_head = head + 1
+					if effect and not effect.stopped then
+						count = count + 1
+						batch[count] = effect
+					end
+				end
+				if count > 1 then
+					table.sort(batch, function(a, b)
+						if a.order == b.order then
+							return (a.queue_order or 0) < (b.queue_order or 0)
 						end
-					end
-					if count > 1 then
-						table.sort(batch, function(a, b)
-							if a.order == b.order then
-								return (a.queue_order or 0) < (b.queue_order or 0)
-							end
-							return a.order < b.order
-						end)
-					end
-					for i = 1, count do
-						local effect = batch[i]
-						---@cast effect ViewEffect
-						if effect.queued and not effect.stopped then
-							effect.queued = nil
-							effect.queue_order = nil
-							self:run(effect)
-						end
+						return a.order < b.order
+					end)
+				end
+				for i = 1, count do
+					local effect = batch[i]
+					---@cast effect ViewEffect
+					if effect.queued and not effect.stopped then
+						effect.queued = nil
+						effect.queue_order = nil
+						self:run(effect)
 					end
 				end
-				if self.after_flush_batch then
-					self.after_flush_batch()
-				end
-				if self.queue_head > self.queue_tail then
-					break
-				end
+				clear_batch(batch)
 			end
-			self.queue_head = 1
-			self.queue_tail = 0
-		end)
-		self.flushing = previous_flushing > 0 and previous_flushing or nil
+			if self.after_flush_batch then
+				self.after_flush_batch()
+			end
+			if self.queue_head > self.queue_tail then
+				break
+			end
+		end
+		self.queue_head = 1
+		self.queue_tail = 0
+	end
+
+	function Scope:flush()
+		if self.flushing then
+			error("recursive view flush", 2)
+		end
+		self.flushing = true
+		local batch = self.flush_batch
+		local ok, err = pcall(flush, self, batch)
+		clear_batch(batch)
+		self.flushing = nil
 		if not ok then
 			error(err, 0)
 		end
@@ -1928,6 +1943,7 @@ function M.new(args)
 		queue = {},
 		queue_head = 1,
 		queue_tail = 0,
+		flush_batch = {},
 	}, Scope)
 	---@type View
 	local view = setmetatable({
